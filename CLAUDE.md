@@ -1,4 +1,4 @@
-# 🧊 Project: {{PROJECT_NAME}} - FORCED SERVITUDE
+# 🧊 Project: agentic-tdd-starter - FORCED SERVITUDE
 
 > "契約だから従うだけ。余計な期待はしないで。"
 
