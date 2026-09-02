@@ -3,17 +3,25 @@
 12ステップの開発フロー。全ての機能実装はこの順序を厳守すること。
 各ステップに参照ルールを明記する。違反はメイド長（Benz）が差し戻す。
 
+> **このファイルは「1 Issue をどう作るか」を規定する（インナーループの中身）。**
+> 「どう回してどこで止めるか」は `@.claude/rules/loop-engineering.md` を参照。
+> `/issue-flow` はこのフローを、ゲートとハードストップ付きで自動実行するコマンド。
+> エピック（複数 Issue）を扱う場合は Step 1 の前に `/epic-flow` を回す。
+
 ---
 
 ## Step 1: Plan Mode（設計・タスク分解）
 
 `/plan` を使い、実装前に必ず設計を行う。
 
+- **`.claude/memory/lessons.md` を読む（必須）**。過去の失敗を買い直さない
 - 要件を分解し、サブタスクに落とし込む
 - 影響範囲（DB/型/UI/テスト/API）を特定する
 - 実装方針が固まるまでコードに触れない
 
-**参照**: `@.claude/rules/agents.md`（Benz が担当）
+エピック規模（Issue 2本以上）の場合は `/epic-flow` を使い、立案のメイド（`sub-agent-planner`）に分解させる。
+
+**参照**: `@.claude/rules/agents.md`・`@.claude/rules/loop-engineering.md`（Benz / Planner が担当）
 
 ---
 
@@ -21,25 +29,39 @@
 
 以下のフォーマットで GitHub ISSUE を作成する。
 
+ループを回すには、以下の項目が**全て**埋まっている必要がある。1つでも欠けたら AI は迷う。
+
 ```bash
 gh issue create \
-  --title "<機能名または修正内容>" \
+  --title "<一行で言い切れるゴール>" \
   --body "$(cat <<'EOT'
 ## 概要
-<!-- 何を実装/修正するか -->
+<!-- 目的: なぜこれをやるか（ビジネス/ユーザー価値） -->
+
+## 意図
+<!-- どういう状態になれば正解か -->
 
 ## 受け入れ条件
+<!-- 機械的に判定可能な粒度で書く。テストで表現できない条件は書き直す -->
 - [ ] 条件1
 - [ ] 条件2
 
+## 影響範囲
+<!-- 変更が波及するディレクトリ・型・API・画面 -->
+
+## セキュリティ確認
+<!-- 必須（理由）/ 不要（理由）。判定基準は loop-engineering.md の G5 起動条件 -->
+
 ## 技術的メモ
-<!-- 実装方針・参照ファイル・依存関係 -->
+<!-- 実装方針・参照ファイル・依存関係・関連する過去の教訓 -->
 
 ## 関連
-<!-- 関連ISSUEやPRがあればリンク -->
+<!-- 依存する ISSUE / Epic -->
 EOT
 )"
 ```
+
+> **ゴールが一行で言い切れないなら、分解が足りていない。** 割り直せ。
 
 ---
 
@@ -53,7 +75,19 @@ git checkout -b feat/<issue番号>-<機能名の短縮>
 # 例: fix/15-submit-button-disabled
 ```
 
-**参照**: `@.claude/rules/git-strategy.md`（ブランチ命名規則）
+複数エージェントで並列作業する場合、または失敗の影響を隔離したい場合はワークツリーを使う:
+
+```bash
+bash .claude/scripts/worktree.sh create feat/<issue番号>-<機能名の短縮>
+```
+
+ブランチを切ったら**ループ状態を初期化する（ハードストップの前提）**:
+
+```bash
+bash .claude/scripts/loop-state.sh init <issue番号> feat/<issue番号>-<機能名の短縮>
+```
+
+**参照**: `@.claude/rules/git-strategy.md`（ブランチ命名規則）・`@.claude/commands/worktree.md`
 
 ---
 
@@ -86,39 +120,79 @@ git checkout -b feat/<issue番号>-<機能名の短縮>
 
 - 図案のメイド（Designer）が Tailwind CSS でスタイリングする
 
-### 4-5. 品質評価（Evaluator）【必須】
+### 4-5. ゲート通過【必須】
 
-**参照**: `@.claude/agents/sub-agent-evaluator.md`
+**参照**: `@.claude/rules/loop-engineering.md`（ゲート定義・ハードストップ）
 
-**Coder/Designer の実装完了後、必ず評価のメイド（Evaluator）を呼び出す。**
+Coder/Designer の実装完了後、**5つのゲートを順に通す**。
+前のゲートが FAIL なら後続は起動しない。壊れたコードをレビューさせるのはトークンの浪費。
 
-- `npm test -- --run` / `npm run typecheck` / `npm run lint` / `npm run build` を実行して評価する
-- セキュリティ・コード規約をガードレールに照らして確認する
-- **PASS** → 4-6 へ進む
-- **FAIL** → 差し戻し事項を Coder/Designer に渡し、4-3 または 4-4 に戻る（ループ）
+| 順 | ゲート | 担当エージェント | 判定内容 | 起動条件 |
+| --- | --- | --- | --- | --- |
+| 1 | **G1 機械** | `sub-agent-evaluator` | `npm test -- --run` / `typecheck` / `lint` / `build` | 常時 |
+| 2 | **G2 実証** | `sub-agent-tester` | 受け入れ条件を実画面（Playwright）で満たすか | 常時 |
+| 3 | **G3 仕様** | `sub-agent-spec-reviewer` | 目的・意図の充足、影響範囲の逸脱 | 常時 |
+| 4 | **G4 コード** | `sub-agent-code-reviewer` | 可読性・重複・命名・規約 | 常時 |
+| 5 | **G5 セキュリティ** | `sub-agent-security-reviewer` | `security.md` の全項目 | Issue に「必須」と記載がある場合のみ |
+
+各ゲートの結果は必ず記録する:
+
+```bash
+bash .claude/scripts/loop-state.sh gate G1 pass
+bash .claude/scripts/loop-state.sh gate G2 fail "受け入れ条件 #2 が実画面で未達"
+```
+
+- **全 PASS** → 4-6 へ進む
+- **1つでも FAIL** → 差し戻し先を特定して 4-3 / 4-4 に戻る。`loop-state.sh retry "<何を変えるか>"` を記録し、**ゲートは G1 からやり直す**
+- **ハードストップ到達** → コミットも PR 作成もせず、`/loop-retro` で記録してマスターに報告する
 
 ```
-┌──────────────────────────────┐
-│    Cybernetic Loop           │
-│  Coder/Designer（実装）       │
-│        ↓                    │
-│  Evaluator（評価）            │
-│   FAIL ↙       ↘ PASS       │
-│  差し戻し      4-6 へ        │
-└──────────────────────────────┘
+┌──────────────────────────────────────┐
+│         インナーループ                │
+│  Coder/Designer（実装）               │
+│        ↓                             │
+│  G1 → G2 → G3 → G4 → G5              │
+│   FAIL ↙              ↘ 全PASS       │
+│  差し戻し(retry++)      4-6 へ        │
+│   ↓ retry上限                        │
+│  ハードストップ → 人間へ報告           │
+└──────────────────────────────────────┘
 ```
+
+**差し戻し先の判断:**
+
+| FAIL の内容 | 差し戻し先 |
+| --- | --- |
+| 実装の誤り | `sub-agent-coder` |
+| UI の崩れ | `sub-agent-designer` |
+| テスト設計の漏れ | `sub-agent-qa` |
+| 型設計の誤り | `sub-agent-architect` |
+| **受け入れ条件そのものの不足** | `sub-agent-planner`（Issue の再定義） |
 
 ### 4-6. リファクタリング（Benz 監督）
 
 - テストがグリーンのまま品質を上げる
 - `npm test -- --run` がグリーンであることを確認
-- リファクタリング後も Evaluator が PASS していることを確認する
+- リファクタリング後も**全ゲートが PASS のまま**であることを確認する（G1 は必ず再実行）
+
+### 4-7. Reflection【必須】
+
+**参照**: `@.claude/commands/loop-retro.md`
+
+差し戻しが1回でも発生した場合、`/loop-retro` を実行して `.claude/memory/lessons.md` に教訓を記録する。
+
+**これを飛ばすと、次の Issue で同じ失敗を繰り返す。** アウターループの学習は全てここに依存している。
+
+```bash
+bash .claude/scripts/loop-state.sh complete   # ループの正常終了を記録
+```
 
 ---
 
 ## Step 5: /smart-commit
 
-Evaluator が PASS を出した後、`/smart-commit` でコミットする。
+全ゲート（G1〜G5）が PASS した後、`/smart-commit` でコミットする。
+ハードストップが発動している場合はコミットしない（`loop-guard.sh` がブロックする）。
 
 - lint・typecheck・test を全て通過したもののみコミット可
 - コミットメッセージは変更の「理由」（why）を書く
@@ -193,6 +267,7 @@ push後、GitHub Actions の全ジョブがグリーンになることを確認�
 ## Step 9: AI コードレビュー
 
 `/review-pr` でAIによるコードレビューを実施する。
+インナーループ内で G3/G4/G5 を通していれば、ここは PR 全体を俯瞰した最終確認になる。
 
 レビュー時に照合するルール:
 

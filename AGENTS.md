@@ -41,6 +41,8 @@ Codex はこの `AGENTS.md` を入口として同じ開発ルールに従いま�
 - `.claude/rules/api-design.md`: Server Actions と Route Handlers
 - `.claude/rules/git-strategy.md`: ブランチ、コミット、PR、マージのルール
 - `.claude/rules/agents.md`: 役割境界と Cybernetic Loop
+- `.claude/rules/loop-engineering.md`: ループ設計（インナー/アウター、5＋1、ゲート、ハードストップ）
+- `.claude/memory/README.md`: メモリ層の運用（教訓の記録と引き継ぎ）
 
 これらのファイルとこのファイルが衝突する場合は、現在の会話でユーザーからより新しい指示がない限り、より具体的なルールファイルを優先してください。
 
@@ -65,19 +67,65 @@ Codex では `.claude/` を source of truth としつつ、Codex 固有の実行
 - シークレットや `.env` ファイルをコミットしない。シークレット値を出力しない。
 - 意図的なテストスナップショットや本番アセットでない限り、一時スクリーンショットや生成された検証画像をリポジトリに残さない。
 - ユーザーが明示的に依頼しない限り、`git reset --hard`、`git clean -fd`、force push、rebase などの破壊的な Git コマンドを避ける。
+- ループ実行時は開始前に `loop-state.sh init` を実行し、ゲート結果と差し戻しを都度記録する。
+- ハードストップに到達したら、コミット・PR 作成・ループ再開を停止し、ユーザーの指示を仰ぐ。
+
+## ループエンジニアリング
+
+このリポジトリは2層のループで動きます。詳細は `.claude/rules/loop-engineering.md` を参照してください。
+
+- **インナーループ**（`.codex/commands/issue-flow.md`）: 1つの Issue 内で「実装 → 5つのゲート → 差し戻し」を回す。
+- **アウターループ**（`.codex/commands/epic-flow.md`）: エピックを Issue に分解し、逐次実行し、教訓を次に引き継ぐ。
+
+### メモリ（最重要）
+
+- Issue 開始前とエピック分解前に `.claude/memory/lessons.md` を**必ず読む**。
+- Issue 完了時とハードストップ時に `.codex/commands/loop-retro.md` の手順で**必ず記録する**。
+- 記録しないループは学習しない。ただの順次実行になる。
+
+### ハードストップ
+
+`.claude/scripts/loop-state.sh` が上限到達を機械的に判定します。
+
+```bash
+bash .claude/scripts/loop-state.sh init <issue> <branch>   # ループ開始（必須）
+bash .claude/scripts/loop-state.sh gate G1 pass            # ゲート結果の記録
+bash .claude/scripts/loop-state.sh retry "<何を変えるか>"   # 差し戻し
+bash .claude/scripts/loop-state.sh check                   # 判定（exit 1 で到達）
+```
+
+既定の上限: リトライ3回 / 60分 / 同一ゲート連続失敗2回（`LOOP_MAX_RETRY` 等で上書き可）。
+
+**到達したら勝手に進まない。勝手に止まらない。** コミットも PR 作成もせず、
+リトライ経緯・落ちたゲート・推定原因・選択肢をユーザーに報告して指示を仰いでください。
+ゲートを通すためのテスト削除・`.skip` 化・`--no-verify` は禁止です。
 
 ## Codex の役割マッピング
 
 Claude Code のサブエージェントは `.claude/agents/` に定義されています。Codex では同じサブエージェントファイルを実行可能エージェントとして持たない場合があるため、役割を作業フェーズとして適用してください。
 
-1. Benz / Tech Lead: 要件を明確化し、作業を分割し、影響範囲を特定する。
-2. QA: 失敗するテストと回帰テストを書く。
-3. Architect: 型、スキーマ、データ境界を定義または調整する。
-4. Coder: テストを通すために必要な最小限のコードを実装する。
-5. Designer: UI、アクセシビリティ、レスポンシブ挙動、視覚確認を扱う。
-6. Evaluator: 完了前にチェックを実行し、ルールに照らしてレビューする。
+**Planner 層**
 
-実装作業では、これらのフェーズを順番に進めてください。小さなドキュメントのみの変更では、関連する一部だけを使い、何をスキップしたか説明してください。
+1. Benz / Tech Lead: 全体を監督し、フェーズ間を調整する。
+2. Planner: エピックを Issue に分解し、目的・意図・受け入れ条件・影響範囲・セキュリティ要否を確定する。
+
+**Generator 層（作る役）**
+
+3. QA: 失敗するテストと回帰テストを書く。
+4. Architect: 型、スキーマ、データ境界を定義または調整する。
+5. Coder: テストを通すために必要な最小限のコードを実装する。
+6. Designer: UI、アクセシビリティ、レスポンシブ挙動、視覚確認を扱う。
+
+**Validator 層（検証する役）— 順番を守り、前が FAIL なら後続を実行しない**
+
+7. Evaluator (G1): テスト・型チェック・Lint・ビルドを実行する。機械的判定のみ。
+8. Tester (G2): 受け入れ条件を実画面・実挙動で確認する。ソース確認だけで終わらせない。
+9. Spec Reviewer (G3): 目的・意図の充足と、影響範囲の逸脱を照合する。
+10. Code Reviewer (G4): 可読性・重複・命名・規約を確認する。
+11. Security Reviewer (G5): セキュリティを検査する。**条件起動**（認証・外部入力境界・SQL・シークレット・危険 API・依存追加のいずれかに該当する場合のみ）。
+
+実装作業では、これらのフェーズを順番に進めてください。作る役と検証する役を混ぜないでください。
+小さなドキュメントのみの変更では、関連する一部だけを使い、何をスキップしたか説明してください。
 
 ## 品質ゲート
 
@@ -105,6 +153,11 @@ npm run build
 - ビジュアルリグレッション実行: `.codex/commands/visual-regression.md`
 - パフォーマンス監査実行: `.codex/commands/perf-audit.md`
 - プロジェクトナレッジ更新: `.codex/commands/knowledge-update.md`
+- インナーループ実行（1 Issue を合格まで回す）: `.codex/commands/issue-flow.md`
+- アウターループ実行（エピック分解と逐次実行）: `.codex/commands/epic-flow.md`
+- Reflection（教訓の記録）: `.codex/commands/loop-retro.md`
+- ループ状態の点検: `.codex/commands/loop-status.md`
+- 作業領域の分離: `.codex/commands/worktree.md`
 
 実行前に、対応するコマンドファイルを読んでください。
 

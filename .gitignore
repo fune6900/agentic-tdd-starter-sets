@@ -6,6 +6,11 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Loop engineering (実行時の一時状態。lessons.md と epics/ はコミットする)
+.claude/memory/loop-state.json
+.claude/memory/loop-state.json.tmp.*
+.worktrees/
+
 # Claude Code local
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
