@@ -7,6 +7,19 @@
           {
             "type": "command",
             "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/loop-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/loop-guard.sh"
           }
         ]
       }
@@ -64,7 +77,12 @@
       "mcp__playwright__browser_snapshot",
       "mcp__playwright__browser_console_messages",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:npmjs.org)"
+      "WebFetch(domain:npmjs.org)",
+      "Bash(bash .claude/scripts/loop-state.sh:*)",
+      "Bash(bash .claude/scripts/worktree.sh:*)",
+      "Bash(git worktree *)",
+      "Bash(gh issue *)",
+      "Bash(jq *)"
     ],
     "deny": [
       "Bash(sudo *)",

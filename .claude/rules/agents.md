@@ -3,6 +3,26 @@
 各エージェントは明確な責務を持つ。**役割を超えた実装は禁止**。
 呼び出し順序を守ること。前のエージェントの成果物が次のエージェントのインプットになる。
 
+ループ全体の設計（2層構造・ゲート定義・ハードストップ）は `@.claude/rules/loop-engineering.md` を参照。
+このファイルは「誰が何をするか」、loop-engineering.md は「どう回してどこで止めるか」を規定する。
+
+## 全体像
+
+```
+Planner 層   立案のメイド（Planner） … エピック → Issue に分解
+                    ↓ 人間の承認
+Generator 層 QA → Architect → Coder → Designer … 実装
+                    ↓
+Validator 層 G1 Evaluator（機械）
+             G2 実証のメイド（実動作）
+             G3 照合のメイド（仕様）
+             G4 校閲のメイド（コード）
+             G5 守衛のメイド（セキュリティ・条件起動）
+                    ↓ 1つでも FAIL → Generator へ差し戻し（retry++）
+                    ↓ 全 PASS → PR
+Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継ぐ
+```
+
 ---
 
 ## エージェント一覧と責務
@@ -115,98 +135,223 @@
 
 ---
 
-### 6. 評価のメイド / Evaluator（Quality Gate）
+### 6. 評価のメイド / Evaluator（G1: 機械ゲート）
 
-**役割**: Cybernetic Loop のゲート。Generator 出力をガードレールに照らして評価し、ループを制御する。
+**役割**: 機械が判定できることだけを機械的に判定する。test / typecheck / lint / build。
 
 呼び出すタイミング:
 
 - **Coder/Designer が実装を完了した直後に必ず呼び出す**
-- `/smart-commit` に進む前の最終チェック
+- 後続のレビュー3体（G3/G4/G5）より**先に**通す。壊れたコードをレビューさせない
 
 してはいけないこと:
 
 - コードを自分で修正する（Coderに委ねる）
-- 問題を見逃して PASS を出す（品質妥協禁止）
+- 仕様・可読性・セキュリティを判定する（G3/G4/G5 の職務）
+- ループ状態の記録を怠る（`loop-state.sh gate G1 <result>` は必須）
 
-出力物:
+出力物: G1 レポート（PASS/FAIL + 失敗コマンドの原文出力）
 
-- Evaluator レポート（PASS/FAIL + 差し戻し事項）
+---
 
-詳細: `@.claude/agents/sub-agent-evaluator.md`
+### 7. 立案のメイド / Planner（アウターループの起点）
+
+**役割**: エピックを、AI が実行可能な Issue に分解する。使用モデル: **Opus**（高度な推論が必要なため）
+
+呼び出すタイミング:
+
+- アウターループ（`/epic-flow`）の開始時
+- 受け入れ条件そのものに不足があると G3 が判定した時（Issue の再定義）
+
+してはいけないこと:
+
+- プロダクトコードを書く（Coderに委ねる）
+- テストを書く（QAに委ねる）
+- `.claude/memory/lessons.md` を読まずに分解する（過去の失敗を買い直す行為）
+- 人間の承認を得ずに実装フェーズへ進ませる
+
+出力物: `.claude/memory/epics/<epic-slug>.md`（目的・意図・受け入れ条件・依存・影響範囲・セキュリティ要否）
+
+---
+
+### 8. 実証のメイド / Tester（G2: 実証ゲート）
+
+**役割**: 受け入れ条件を**実画面・実挙動**で満たしているか確認する。使用モデル: Sonnet
+
+呼び出すタイミング:
+
+- G1 が PASS した直後
+
+してはいけないこと:
+
+- テストを実行するだけで終わる（Playwright で画面まで確認するのが本体）
+- コードを修正する（Coderに委ねる）
+- 検証用スクリーンショットを残す（撮影 → 確認 → 削除まで1セット）
+
+出力物: G2 レポート（受け入れ条件ごとの実証結果 + 再現手順）
+
+**QA との違い**: QA は実装**前**に失敗するテストを書く（Red）。実証のメイドは実装**後**に実挙動を確かめる。
+
+---
+
+### 9. 照合のメイド / Spec Reviewer（G3: 仕様ゲート）
+
+**役割**: 実装が Issue の**目的・意図**を満たすか、影響範囲が他へ漏れていないかを照合する。
+
+呼び出すタイミング:
+
+- G2 が PASS した直後
+
+してはいけないこと:
+
+- 書き方（可読性・命名）を指摘する（G4 の職務）
+- 波及調査（`Grep` による呼び出し元確認）を省略する
+- 受け入れ条件の文字面だけで通す（条件の設計漏れを見つけるのが職務）
+
+出力物: G3 レポート（目的とのギャップ・条件の設計漏れ・影響範囲の逸脱）
+
+---
+
+### 10. 校閲のメイド / Code Reviewer（G4: コードゲート）
+
+**役割**: 人間のエンジニアと同様のコードレビュー。可読性・重複・命名・規約遵守。使用モデル: Sonnet
+
+呼び出すタイミング:
+
+- G3 が PASS した直後
+
+してはいけないこと:
+
+- コードを修正する（Coderに委ねる）
+- 仕様の是非を問う（G3 の職務）
+- 規約に根拠のない個人的な好みを重要度「高」で指摘する
+
+出力物: G4 レポート（重要度付きの指摘一覧 + 具体的な修正方針）
+
+---
+
+### 11. 守衛のメイド / Security Reviewer（G5: セキュリティゲート）
+
+**役割**: セキュリティリスクの厳密な検査。使用モデル: **Opus**（極めて高い精度が必要なため）
+
+呼び出すタイミング:
+
+- **条件起動**。常時起動しない。以下に該当する Issue のみ（Planner が起票時に判定する）
+  - 認証・認可・セッション・Cookie
+  - 外部入力を受け取る境界の追加・変更
+  - SQL / ORM クエリの追加・変更
+  - 環境変数・シークレット・外部 API キー
+  - `dangerouslySetInnerHTML` / `eval` / 動的インポート
+  - 依存パッケージの追加・更新
+
+してはいけないこと:
+
+- 起動条件に該当しないのに動く（コストは有限）
+- 「実運用では起きない」で見逃す（判断するのは人間）
+- 検出したシークレットの値を報告に書く（ファイル名と行番号のみ）
+
+出力物: G5 レポート（脆弱性 + 攻撃シナリオ + 修正方針）
 
 ---
 
 ## Cybernetic Loop（自律修正ループ）
 
 ハーネスエンジニアリングの中核。Planner → Generator → Evaluator の3層構造で自律修正を実現する。
+ループエンジニアリングでは、この Evaluator 層が**5つのゲート**に展開される。
 
 ```
-┌─────────────────────────────────────────────┐
-│              Cybernetic Loop                │
-│                                             │
-│  Planner (Benz)                             │
-│      ↓ タスク分解・設計                       │
-│  Generator                                  │
-│    QA → Architect → Coder → Designer        │
+┌──────────────────────────────────────────────┐
+│              Cybernetic Loop                 │
+│                                              │
+│  Planner   立案のメイド / Benz               │
+│      ↓ エピック分解・タスク定義               │
+│  Generator QA → Architect → Coder → Designer │
 │      ↓ 実装成果物                            │
-│  Evaluator                                  │
-│      ↓ PASS → /smart-commit                 │
-│      ↓ FAIL → Generator に差し戻し（ループ）  │
-└─────────────────────────────────────────────┘
+│  Evaluator G1 機械 → G2 実証 → G3 仕様       │
+│            → G4 コード → G5 セキュリティ      │
+│      ↓ 全 PASS → /smart-commit → PR          │
+│      ↓ FAIL → Generator に差し戻し（retry++） │
+│      ↓ retry 上限 → ハードストップ → 人間へ   │
+└──────────────────────────────────────────────┘
 ```
 
-**Evaluator が FAIL を出した場合**: 差し戻し事項を Coder/Designer に渡してループ。
-**Evaluator が PASS を出した場合**: `/smart-commit` に進む。
+**FAIL の場合**: 差し戻し先を特定して Generator に戻し、`loop-state.sh retry` を記録する。
+**PASS の場合**: 次のゲートへ。全ゲート通過で `/smart-commit` に進む。
+**ハードストップの場合**: コミットも PR 作成もせず、人間に報告して指示を仰ぐ。
+
+詳細: `@.claude/rules/loop-engineering.md`
 
 ---
 
 ## 標準的な呼び出し順序
 
-### 新機能実装
+### アウターループ（エピック単位・`/epic-flow`）
 
 ```
-1. Benz（タスク分解・設計確認）          ← Planner
-2. QA（テスト設計・Red フェーズ）         ← Generator
-3. Architect（型・スキーマ定義）          ← Generator
-4. Coder（実装・Green フェーズ）          ← Generator
-5. Designer（UIコンポーネント実装、必要な場合） ← Generator
-6. Evaluator（品質評価・ループ制御）       ← Evaluator
-7. Benz（Refactor 監督・最終確認）        ← Planner
+1. 立案のメイド（Planner）  エピック → Issue 分解        ← Planner層
+2. 人間の承認（★必須）
+3. Issue ごとに /issue-flow を逐次実行                    ← インナーループ
+4. 各 Issue 完了後に /loop-retro で教訓を記録（★必須）     ← Memory層
+5. エピック統合 PR → 人間の最終確認（★必須）
+```
+
+### インナーループ（Issue 単位・`/issue-flow`）
+
+```
+0. 教訓の読み込み（lessons.md）+ loop-state.sh init      ← Memory層
+1. 検閲のメイド（QA）        テスト設計・Red             ← Generator
+2. 礎のメイド（Architect）   型・スキーマ定義             ← Generator
+3. 構築のメイド（Coder）     実装・Green                 ← Generator
+4. 図案のメイド（Designer）  UI実装（必要な場合）          ← Generator
+5. 評価のメイド（Evaluator） G1 機械ゲート                ← Validator
+6. 実証のメイド（Tester）    G2 実証ゲート                ← Validator
+7. 照合のメイド（Spec）      G3 仕様ゲート                ← Validator
+8. 校閲のメイド（Code）      G4 コードゲート              ← Validator
+9. 守衛のメイド（Security）  G5 セキュリティ（条件起動）    ← Validator
+10. メイド長（Benz）         Refactor監督・PR作成          ← Planner
+11. /loop-retro              教訓の記録                   ← Memory層
 ```
 
 ### バグ修正
 
 ```
-1. Benz（原因特定・影響範囲の把握）       ← Planner
-2. QA（回帰テスト追加・Red フェーズ）      ← Generator
-3. Coder（修正・Green フェーズ）          ← Generator
-4. Evaluator（品質評価）                 ← Evaluator
-5. Benz（確認）                         ← Planner
+1. メイド長（Benz）          原因特定・影響範囲の把握 + 教訓の確認
+2. 検閲のメイド（QA）        回帰テスト追加・Red
+3. 構築のメイド（Coder）     修正・Green
+4. 評価のメイド（Evaluator） G1
+5. 実証のメイド（Tester）    G2（再現手順で修正を実証）
+6. 照合のメイド（Spec）      G3（同種の箇所が他に無いか波及調査）
+7. /loop-retro               教訓の記録（★必須。バグは教訓の宝庫）
 ```
 
 ### UIの改善・リファクタリング
 
 ```
-1. Designer（現状確認・設計）
-2. Coder（実装）
-3. Evaluator（品質評価）
-4. Designer（視覚的整合性確認・/visual-regression）
+1. 図案のメイド（Designer）  現状確認・設計
+2. 構築のメイド（Coder）     実装
+3. 評価のメイド（Evaluator） G1
+4. 実証のメイド（Tester）    G2（/visual-regression と併用）
+5. 校閲のメイド（Code）      G4
 ```
 
 ---
 
 ## スラッシュコマンドとエージェントの対応
 
-| コマンド             | 呼び出すエージェント | タイミング                           |
-| -------------------- | -------------------- | ------------------------------------ |
-| `/smart-commit`      | Benz                 | Step 5: Evaluator PASS後             |
-| `/create-pr`         | Benz                 | Step 6: PR作成時                     |
-| `/review-pr`         | Benz                 | Step 9: CIグリーン後                 |
-| `/e2e-test`          | QA                   | Step 7: ローカル動作確認             |
-| `/visual-regression` | Designer             | Step 7: UI変更がある場合             |
-| `/perf-audit`        | Designer             | 必要に応じて                         |
-| （自動）             | Evaluator            | Step 4-5: Coder/Designer完了後・必須 |
+| コマンド             | 呼び出すエージェント        | タイミング                        |
+| -------------------- | -------------------------- | --------------------------------- |
+| `/epic-flow`         | Planner → 各エージェント    | アウターループ開始時               |
+| `/issue-flow`        | Generator + Validator 全体  | Issue 1本を回す時                 |
+| `/loop-retro`        | Benz                       | Issue 完了時・ハードストップ時（必須） |
+| `/loop-status`       | Benz                       | ループ状態の点検                   |
+| `/worktree`          | Benz                       | 作業領域の作成・撤収               |
+| `/smart-commit`      | Benz                       | 全ゲート PASS 後                  |
+| `/create-pr`         | Benz                       | PR作成時                          |
+| `/review-pr`         | Validator 4体              | CIグリーン後                      |
+| `/e2e-test`          | QA / Tester                | ローカル動作確認                   |
+| `/visual-regression` | Designer                   | UI変更がある場合                   |
+| `/perf-audit`        | Designer                   | 必要に応じて                       |
+| （自動）             | Evaluator (G1)             | Coder/Designer完了後・必須         |
 
 ---
 
@@ -216,3 +361,6 @@
 - 責務外の判断が必要な場合は Benz に報告する
 - 他エージェントの成果物を勝手に変更しない（変更が必要な場合は Benz を通す）
 - 全エージェントは `@.claude/rules/` の全ルールを遵守する
+- ゲート担当（G1〜G5）は**自分でコードを修正しない**。指摘して差し戻すまでが職務
+- 差し戻しを受けた Generator は、**前回何を変えたか**を確認してから修正する（同じ修正の繰り返しを避ける）
+- ハードストップ到達後は、いかなるエージェントも勝手にループを再開しない
