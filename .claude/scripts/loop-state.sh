@@ -211,7 +211,7 @@ cmd_check() {
   if [ -n "$worst_gate" ]; then
     local n
     n=$(jq -r --arg g "$worst_gate" '.consecutive_gate_fail[$g]' "$STATE_FILE")
-    cmd_stop "同一ゲート $worst_gate が $n 回連続で失敗（上限 $max_gate_fail）。修正方針が的外れな可能性が高い。"
+    cmd_stop "同一ゲート $worst_gate が $n 回連続で失敗（上限 ${max_gate_fail}）。修正方針が的外れな可能性が高い。"
     return 1
   fi
 

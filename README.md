@@ -63,9 +63,18 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
 .
 ├── AGENTS.md                    # Codex 用のルート指示（要編集）
 ├── CLAUDE.md                    # プロジェクト全体のルートメモリ（要編集）
+├── tests/                       # テンプレート自身のテスト（導入先にはコピーしない）
+│   ├── run.sh                   # テストランナー
+│   └── scripts/
+│       ├── lib.sh               # アサーションとサンドボックス
+│       ├── loop-journal.test.sh # 外部記憶（traversal の回帰テストを含む）
+│       ├── loop-state.test.sh   # ハードストップ
+│       ├── shell-lint.test.sh   # 過去に踏んだ地雷の検出
+│       └── docs-consistency.test.sh # ドキュメントと実体の整合
 ├── .github/
 │   └── workflows/
-│       └── loop-automation.yml  # ①自動化: ラベル/手動/定期でループを起動
+│       ├── loop-automation.yml  # ①自動化: ラベル/手動/定期でループを起動
+│       └── template-ci.yml      # テンプレート自身の CI（導入先にはコピーしない）
 ├── .codex/
 │   ├── README.md                # Codex 設定の概要
 │   ├── agents/                  # Codex 用の役割定義（11体）
@@ -143,9 +152,16 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
 git clone https://github.com/<your-account>/agentic-tdd-starter.git /tmp/agentic-tdd-starter
 cp -r /tmp/agentic-tdd-starter/.claude .
 cp -r /tmp/agentic-tdd-starter/.codex .
-cp -r /tmp/agentic-tdd-starter/.github .
 cp /tmp/agentic-tdd-starter/CLAUDE.md .
 cp /tmp/agentic-tdd-starter/AGENTS.md .
+
+# ワークフローは選んでコピーする
+mkdir -p .github/workflows
+cp /tmp/agentic-tdd-starter/.github/pull_request_template.md .github/
+cp /tmp/agentic-tdd-starter/.github/workflows/loop-automation.yml .github/workflows/
+# ⚠ template-ci.yml はテンプレート自身の CI。導入先にはコピーしない。
+#   導入先の CI は初回起動時に自動生成される（後述の「導入先の CI」を参照）
+
 rm -rf /tmp/agentic-tdd-starter
 ```
 
@@ -249,6 +265,35 @@ Codex ではプロジェクトルートの `AGENTS.md` が入口になる。`AGE
 
 ---
 
+## ✅ テストと CI
+
+テンプレート自身のテストは外部フレームワークに依存しない。`bash` と `git`、`jq` だけで動く。
+
+```bash
+bash tests/run.sh                  # 全スイート
+bash tests/run.sh loop-journal     # 名前でフィルタ
+```
+
+| スイート | 何を守るか |
+| --- | --- |
+| `loop-journal` | 記録を失わないこと。ジャーナル外のファイルを触らないこと |
+| `loop-state` | 上限に達したら**必ず止まる**こと |
+| `shell-lint` | 過去に踏んだ地雷（多バイト文字に隣接する変数展開・コマンド置換の中の die）の再発 |
+| `docs-consistency` | ルールが参照するファイル・コマンド・エージェントの実在 |
+
+各テストは `mktemp -d` の隔離環境で動き、実リポジトリと実 Vault には触れない。
+
+CI は `.github/workflows/template-ci.yml`。`pull_request` と `main` への push で発火し、
+構文検査 / shellcheck（warning 以上ゼロ）/ 上記テスト / 後片付けの確認を行う。
+**これはテンプレート自身の CI であり、導入先にはコピーしない。**
+
+### 導入先の CI
+
+導入先プロジェクトの CI は、初回起動時に導入先のスタックを検出して
+`.github/workflows/ci.yml` として自動生成される（既存の `ci.yml` があれば上書きしない）。
+
+---
+
 ## ⛔ ハードストップ
 
 「合格するまでやり直せ」とだけ命じるのは設計放棄。解けない問題に無限リトライしてコストが死ぬ。
@@ -313,7 +358,8 @@ bash .claude/scripts/loop-journal.sh outer plan "分解完了" <<< "- 3本に分
 bash .claude/scripts/loop-journal.sh flush <<< "- 完了"
 
 # 状態確認
-bash .claude/scripts/loop-journal.sh status
+bash .claude/scripts/loop-journal.sh status   # 接続状態・進行中エピック・未フラッシュ量
+bash .claude/scripts/loop-journal.sh where    # 解決した各パス（Vault / ジャーナル / エピック）
 ```
 
 **読む先の判定は自動。** 進行中のエピックがあれば内部ジャーナル、無ければ Vault。

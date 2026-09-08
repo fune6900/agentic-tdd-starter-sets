@@ -1,0 +1,139 @@
+# テンプレート自身の CI
+#
+# ⚠ このワークフローは **このテンプレートリポジトリ専用**。導入先プロジェクトへコピーしない。
+#    導入先の CI は初回起動時に .claude/scripts/bootstrap-project.sh が
+#    .github/workflows/ci.yml として生成する（別物）。
+#
+# このリポジトリの成果物はシェルスクリプトと Markdown なので、
+# 機械判定できるのは「構文」「静的解析」「スクリプトの振る舞い」「ドキュメントと実体の整合」の4つ。
+# G1 機械ゲートの実体がこれ。
+
+name: Template CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: template-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: シェル（構文 + 静的解析）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 構文検査（bash -n）
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            if bash -n "$f"; then
+              echo "  ok   $f"
+            else
+              echo "  FAIL $f"
+              rc=1
+            fi
+          done < <(find .claude .codex tests -name '*.sh' -type f | sort)
+          exit $rc
+
+      - name: 静的解析（shellcheck）
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          # warning 以上を全て潰した状態を維持する。info/style は対象外。
+          find .claude .codex tests -name '*.sh' -type f -print0 \
+            | xargs -0 shellcheck -S warning
+
+      - name: リポジトリ固有の地雷検査
+        # shellcheck が拾えない、過去に実際に踏んだ書き方を検出する。
+        # ローカルでも同じものが回るようテストスイートに置いてある（grep -P は macOS で動かない）。
+        run: bash tests/run.sh shell-lint
+
+  tests:
+    name: スクリプトの振る舞い
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: jq の確認
+        run: jq --version
+
+      - name: テスト実行
+        run: bash tests/run.sh
+
+  docs:
+    name: ドキュメントと実体の整合
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 整合テスト
+        run: bash tests/run.sh docs-consistency
+
+      - name: YAML の構文検査
+        run: |
+          python3 - <<'PY'
+          import sys, glob
+          try:
+              import yaml
+          except ImportError:
+              print("PyYAML が無いので検査をスキップする")
+              sys.exit(0)
+          bad = 0
+          for f in sorted(glob.glob(".github/workflows/*.yml")):
+              try:
+                  yaml.safe_load(open(f, encoding="utf-8"))
+                  print(f"  ok   {f}")
+              except Exception as e:
+                  print(f"  FAIL {f}: {e}")
+                  bad = 1
+          sys.exit(bad)
+          PY
+
+  hygiene:
+    name: 後片付け
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 検証用スクショが混入していないこと
+        # dev-flow.md Step 7-1: 撮影 → 確認 → 削除を1セット
+        run: |
+          found=$(find . -path ./.git -prune -o \
+            \( -name '*.png' -o -name '*.jpeg' -o -name '*.jpg' \) -print \
+            | grep -v '^./docs/' || true)
+          if [ -n "$found" ]; then
+            echo "::error::検証用スクリーンショットが残っている"
+            echo "$found"
+            exit 1
+          fi
+          echo "  ok   残骸なし"
+
+      - name: ループの実行時状態がコミットされていないこと
+        run: |
+          if git ls-files --error-unmatch .claude/memory/loop-state.json >/dev/null 2>&1; then
+            echo "::error::loop-state.json は実行時状態。コミットしない"
+            exit 1
+          fi
+          echo "  ok   未追跡"
+
+      - name: 端末固有の Vault ポインタがコミットされていないこと
+        run: |
+          rc=0
+          for f in .vault .active .project; do
+            if git ls-files --error-unmatch ".claude/memory/journal/$f" >/dev/null 2>&1; then
+              echo "::error::.claude/memory/journal/$f は端末ごとの設定。コミットしない"
+              rc=1
+            fi
+          done
+          exit $rc

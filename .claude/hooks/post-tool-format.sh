@@ -3,7 +3,6 @@
 # Write / Edit ツール実行後に発火
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 if [ -z "$FILE_PATH" ]; then

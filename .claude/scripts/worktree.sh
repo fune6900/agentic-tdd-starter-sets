@@ -27,7 +27,8 @@ cmd_create() {
   if [ -z "$branch" ]; then
     echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1
   fi
-  local dir="$WORKTREE_ROOT/$(slug "$branch")"
+  local dir
+  dir="$WORKTREE_ROOT/$(slug "$branch")"
 
   if [ -d "$dir" ]; then
     echo "既存の作業領域を再利用する: $dir"
@@ -64,7 +65,8 @@ cmd_path() {
 cmd_remove() {
   local branch="${1:-}"
   [ -z "$branch" ] && { echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1; }
-  local dir="$WORKTREE_ROOT/$(slug "$branch")"
+  local dir
+  dir="$WORKTREE_ROOT/$(slug "$branch")"
 
   if [ ! -d "$dir" ]; then
     echo "作業領域が存在しない: $dir"; exit 0
@@ -77,7 +79,7 @@ cmd_remove() {
     exit 1
   fi
 
-  git -C "$PROJECT_DIR" worktree remove "$dir" && echo "作業領域を削除した: $dir（ブランチ $branch は残っている）"
+  git -C "$PROJECT_DIR" worktree remove "$dir" && echo "作業領域を削除した: ${dir}（ブランチ $branch は残っている）"
 }
 
 cmd_prune() { git -C "$PROJECT_DIR" worktree prune -v; }
