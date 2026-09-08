@@ -25,6 +25,18 @@ Codex 用の実行手順は以下:
 - `commands/worktree.md`: 安全な作業環境の作成・撤収
 
 ハードストップの判定は `.claude/scripts/loop-state.sh` が行います（Claude / Codex 共用）。
+外部記憶（内部ジャーナル ↔ Obsidian Vault）の読み書きは `.claude/scripts/loop-journal.sh` が行います（同じく共用）。
+
+### 外部記憶（2層）
+
+```
+外部（Obsidian Vault）  <VAULT>/projects/<project>.md   … 永続・追記のみ
+        ↑ flush（アウターループ完了時に1回）
+内部（Git 管理）        .claude/memory/journal/<epic>.md … インナーの節目4点。flush 後に削除
+```
+
+**新しいタスクの最初の行動は `bash .claude/scripts/loop-journal.sh context`。**
+進行中のエピックがあれば内部ジャーナル、無ければ Vault の直近エピックが出力されます。
 
 ## 運用
 

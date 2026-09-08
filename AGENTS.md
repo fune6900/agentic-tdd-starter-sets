@@ -43,6 +43,17 @@ Codex はこの `AGENTS.md` を入口として同じ開発ルールに従いま�
 - `.claude/rules/agents.md`: 役割境界と Cybernetic Loop
 - `.claude/rules/loop-engineering.md`: ループ設計（インナー/アウター、5＋1、ゲート、ハードストップ）
 - `.claude/memory/README.md`: メモリ層の運用（教訓の記録と引き継ぎ）
+- `.claude/memory/journal/README.md`: インナーループ経緯の記録と外部 Obsidian Vault への書き写し
+
+**新しいタスクの最初の行動は、前回までの記録を読むことです。** コードに触れる前に実行してください:
+
+```bash
+bash .claude/scripts/loop-journal.sh context
+```
+
+進行中のエピックがあれば内部ジャーナル（`.claude/memory/journal/<epic>.md`）、
+無ければ外部 Obsidian Vault（`<VAULT>/projects/<project>.md`）の直近エピックが出力されます。
+別端末・別セッションの続きである可能性があるため、読まずに着手しないでください。
 
 これらのファイルとこのファイルが衝突する場合は、現在の会話でユーザーからより新しい指示がない限り、より具体的なルールファイルを優先してください。
 

@@ -5,7 +5,7 @@
 # 上限到達を機械的に判定する。判定は人間の気分ではなくこのスクリプトが行う。
 #
 # 使い方:
-#   loop-state.sh init <issue> [branch]      ループ開始（状態を初期化）
+#   loop-state.sh init <issue> [branch] [epic]  ループ開始（状態を初期化）
 #   loop-state.sh show                       現在の状態を表示
 #   loop-state.sh gate <G1..G5> <pass|fail> [reason]
 #                                            ゲート結果を記録
@@ -59,10 +59,13 @@ refuse_if_halted() {
 cmd_init() {
   local issue="${1:-unknown}"
   local branch="${2:-$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo unknown)}"
+  # epic は外部記憶（loop-journal.sh）がジャーナルの宛先を特定するのに使う
+  local epic="${3:-${LOOP_EPIC:-}}"
   mkdir -p "$STATE_DIR"
   jq -n \
     --arg issue "$issue" \
     --arg branch "$branch" \
+    --arg epic "$epic" \
     --arg started_at "$(now_iso)" \
     --argjson started_epoch "$(now_epoch)" \
     --argjson max_retry "$MAX_RETRY" \
@@ -71,6 +74,7 @@ cmd_init() {
     '{
       issue: $issue,
       branch: $branch,
+      epic: $epic,
       status: "running",
       started_at: $started_at,
       started_epoch: $started_epoch,
@@ -85,7 +89,7 @@ cmd_init() {
       halt_reason: null,
       history: []
     }' | write_state
-  echo "ループ開始: issue=$issue branch=$branch (retry上限=$MAX_RETRY / 時間上限=${MAX_MINUTES}分)"
+  echo "ループ開始: issue=$issue branch=$branch${epic:+ epic=$epic} (retry上限=$MAX_RETRY / 時間上限=${MAX_MINUTES}分)"
 }
 
 cmd_show() {
