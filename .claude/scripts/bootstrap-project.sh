@@ -7,7 +7,8 @@
 # 原則:
 #   1. **既存ファイルを絶対に上書きしない。** 人のリポジトリを壊さない
 #   2. **検出できなければ何もしない。** 憶測でファイルを撒かない
-#   3. **冪等。** 何度実行しても結果が変わらない
+#   3. **推測でフラグを足さない。** 事実（依存関係・ロックファイル）から決まるものだけ書く
+#   4. **冪等。** 何度実行しても結果が変わらない
 #
 # 使い方:
 #   bootstrap-project.sh            生成して結果を表示する
@@ -23,6 +24,8 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${CODEX_PROJECT_DIR:-$(git rev-parse --show-t
 WORKFLOW_DIR="$PROJECT_DIR/.github/workflows"
 WORKFLOW_FILE="$WORKFLOW_DIR/ci.yml"
 
+DEFAULT_NODE="22"
+
 QUIET=0
 DRY_RUN=0
 for arg in "$@"; do
@@ -34,7 +37,7 @@ for arg in "$@"; do
 done
 
 say() { [ "$QUIET" -eq 1 ] || echo "$@"; }
-note() { echo "$@"; }   # 生成したときは quiet でも必ず知らせる
+note() { echo "$@"; }   # 生成したとき・警告は quiet でも必ず知らせる
 
 # ---------- 早期離脱 ----------
 
@@ -69,14 +72,37 @@ if ! jq empty "$PKG_JSON" >/dev/null 2>&1; then
 fi
 
 has_script() { jq -e --arg s "$1" '.scripts[$s] // empty' "$PKG_JSON" >/dev/null 2>&1; }
+has_dep() {
+  jq -e --arg d "$1" \
+    '((.dependencies // {}) + (.devDependencies // {}))[$d] // empty' \
+    "$PKG_JSON" >/dev/null 2>&1
+}
 
-# パッケージマネージャはロックファイルで判定する。宣言より事実を信じる。
+# ---------- パッケージマネージャ ----------
+# 宣言（packageManager フィールド）ではなくロックファイルで判定する。宣言はズレるが
+# ロックファイルは事実だから。ただし pnpm のセットアップでは packageManager の有無も見る。
+
+LOCKFILES=""
+[ -f "$PROJECT_DIR/package-lock.json" ] && LOCKFILES="$LOCKFILES package-lock.json"
+[ -f "$PROJECT_DIR/yarn.lock" ]         && LOCKFILES="$LOCKFILES yarn.lock"
+[ -f "$PROJECT_DIR/pnpm-lock.yaml" ]    && LOCKFILES="$LOCKFILES pnpm-lock.yaml"
+[ -f "$PROJECT_DIR/bun.lockb" ]         && LOCKFILES="$LOCKFILES bun.lockb"
+
+LOCK_COUNT=0
+for _lock in $LOCKFILES; do LOCK_COUNT=$((LOCK_COUNT + 1)); done
+
+if [ "$LOCK_COUNT" -gt 1 ]; then
+  note "WARN: ロックファイルが複数ある:$LOCKFILES"
+  note "WARN: 後勝ちで決定する。意図しない場合は不要なロックファイルを消してから生成し直せ。"
+fi
+
 PM="npm"
 INSTALL_CMD="npm install"
-[ -f "$PROJECT_DIR/package-lock.json" ] && { PM="npm"; INSTALL_CMD="npm ci"; }
-[ -f "$PROJECT_DIR/yarn.lock" ]         && { PM="yarn"; INSTALL_CMD="yarn install --frozen-lockfile"; }
-[ -f "$PROJECT_DIR/pnpm-lock.yaml" ]    && { PM="pnpm"; INSTALL_CMD="pnpm install --frozen-lockfile"; }
-[ -f "$PROJECT_DIR/bun.lockb" ]         && { PM="bun";  INSTALL_CMD="bun install --frozen-lockfile"; }
+HAS_LOCK=0
+[ -f "$PROJECT_DIR/package-lock.json" ] && { PM="npm";  INSTALL_CMD="npm ci"; HAS_LOCK=1; }
+[ -f "$PROJECT_DIR/yarn.lock" ]         && { PM="yarn"; INSTALL_CMD="yarn install --frozen-lockfile"; HAS_LOCK=1; }
+[ -f "$PROJECT_DIR/pnpm-lock.yaml" ]    && { PM="pnpm"; INSTALL_CMD="pnpm install --frozen-lockfile"; HAS_LOCK=1; }
+[ -f "$PROJECT_DIR/bun.lockb" ]         && { PM="bun";  INSTALL_CMD="bun install --frozen-lockfile"; HAS_LOCK=1; }
 
 run_prefix() {
   case "$PM" in
@@ -98,37 +124,70 @@ exec_prefix() {
   esac
 }
 
-# Node のバージョンは .nvmrc → engines.node → 22 の順で決める
-NODE_VERSION="22"
-if [ -f "$PROJECT_DIR/.nvmrc" ]; then
-  NODE_VERSION="$(tr -d ' v\n\r' < "$PROJECT_DIR/.nvmrc")"
-elif jq -e '.engines.node // empty' "$PKG_JSON" >/dev/null 2>&1; then
-  NODE_VERSION="$(jq -r '.engines.node' "$PKG_JSON" | tr -d '^~>=<x* ' | cut -d. -f1)"
-fi
-[ -n "$NODE_VERSION" ] || NODE_VERSION="22"
+# ---------- Node のバージョン ----------
+# .nvmrc → engines.node → 既定。
+# engines.node は範囲（">=18 <21"）や OR（"18.x || 20.x"）が書けるが1つには一意化できない。
+# **推測せず既定へ倒す。** 数字だけ抜き出すと ">=18 <21" が "1821" になって CI が壊れる。
 
-# ---------- 生成する内容の決定 ----------
+NODE_VERSION=""
+NODE_SOURCE=""
+
+if [ -s "$PROJECT_DIR/.nvmrc" ]; then
+  # .nvmrc は setup-node がそのまま解釈する（lts/* エイリアスを含む）ので加工しない
+  NODE_VERSION="$(head -1 "$PROJECT_DIR/.nvmrc" | tr -d ' \t\r' | sed 's/^v//')"
+  [ -n "$NODE_VERSION" ] && NODE_SOURCE=".nvmrc"
+fi
+
+if [ -z "$NODE_VERSION" ]; then
+  ENGINES_NODE="$(jq -r '.engines.node // empty' "$PKG_JSON" 2>/dev/null)"
+  if [ -n "$ENGINES_NODE" ]; then
+    # 採用するのは単項の単純指定だけ: "22" / "22.1.0" / "18.x" / "^20.9" / ">=18"
+    if printf '%s' "$ENGINES_NODE" \
+        | grep -Eq '^[[:space:]]*[\^~]?(>=|>)?[[:space:]]*[0-9]+(\.[0-9x]+)*[[:space:]]*$'; then
+      NODE_VERSION="$(printf '%s' "$ENGINES_NODE" | tr -cd '0-9.' | cut -d. -f1)"
+      [ -n "$NODE_VERSION" ] && NODE_SOURCE="engines.node"
+    else
+      note "WARN: engines.node が範囲/OR 指定のため一意に決められない: '$ENGINES_NODE'"
+      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
+    fi
+  fi
+fi
+
+if [ -z "$NODE_VERSION" ]; then
+  NODE_VERSION="$DEFAULT_NODE"
+  NODE_SOURCE="既定"
+fi
+
+# ---------- ステップの決定 ----------
 
 DETECTED=""
-add_step() { # <ジョブ名> <コマンド>
+STEPS=""
+add_step() { # <ステップ名> <コマンド>
   STEPS="$STEPS
       - name: $1
         run: $2"
   DETECTED="$DETECTED $1"
 }
 
-STEPS=""
 has_script lint      && add_step "lint"      "$(run_prefix) lint"
 has_script typecheck && add_step "typecheck" "$(run_prefix) typecheck"
+
 if has_script test; then
-  # Vitest / Jest を watch モードで回して CI をハングさせない
-  case "$PM" in
-    npm)  add_step "test" "npm test -- --run" ;;
-    yarn) add_step "test" "yarn test --run" ;;
-    pnpm) add_step "test" "pnpm test -- --run" ;;
-    bun)  add_step "test" "bun test" ;;
-  esac
+  # テストランナーを推測してフラグを足さない。Vitest 以外に --run を付けると落ちる
+  # （Jest は Unrecognized CLI Parameter で必ず失敗する）。
+  # 依存関係から Vitest だと確実に判定できるときだけ、明示的にワンショット実行させる。
+  if has_dep vitest; then
+    case "$PM" in
+      npm|pnpm) add_step "test" "$PM test -- --run" ;;
+      yarn)     add_step "test" "yarn test --run" ;;
+      bun)      add_step "test" "bun run test -- --run" ;;
+    esac
+  else
+    # CI では CI=true が立つため、主要なランナーは watch に入らない
+    add_step "test" "$(run_prefix) test"
+  fi
 fi
+
 has_script build && add_step "build" "$(run_prefix) build"
 
 if [ -z "$STEPS" ] && ! has_script e2e; then
@@ -136,28 +195,69 @@ if [ -z "$STEPS" ] && ! has_script e2e; then
   exit 0
 fi
 
-# パッケージマネージャのセットアップ手順
+# ---------- セットアップ手順 ----------
+
 SETUP=""
-CACHE="$PM"
 case "$PM" in
   pnpm)
     SETUP="      - uses: pnpm/action-setup@v4
 "
+    # pnpm/action-setup は packageManager フィールドが無い場合 version 入力を必須とする。
+    # 省略したまま生成すると Action 自体が落ちるので、ロックファイルから major を推定して明示する。
+    if ! jq -e '.packageManager // empty' "$PKG_JSON" >/dev/null 2>&1; then
+      LOCKFILE_VERSION="$(grep -m1 '^lockfileVersion:' "$PROJECT_DIR/pnpm-lock.yaml" 2>/dev/null \
+        | tr -cd '0-9.')"
+      case "$LOCKFILE_VERSION" in
+        9*)   PNPM_MAJOR="9" ;;
+        6*)   PNPM_MAJOR="8" ;;
+        5.4*) PNPM_MAJOR="7" ;;
+        *)    PNPM_MAJOR="10" ;;
+      esac
+      SETUP="      - uses: pnpm/action-setup@v4
+        with:
+          # package.json に packageManager が無いため version の明示が必須。
+          # Corepack を使うなら packageManager を書いた上で、この2行を消してよい。
+          version: $PNPM_MAJOR
+"
+    fi
     ;;
   bun)
     SETUP="      - uses: oven-sh/setup-bun@v2
 "
-    CACHE=""
     ;;
 esac
+
+# setup-node の cache はロックファイルの実在が前提。無いまま指定すると
+# "Dependencies lock file is not found" でジョブが落ちる。
+CACHE_LINE=""
+if [ "$HAS_LOCK" -eq 1 ]; then
+  CACHE_LINE="
+          cache: $PM"
+fi
 
 if [ "$PM" = "bun" ]; then
   NODE_SETUP=""
 else
   NODE_SETUP="      - uses: actions/setup-node@v4
         with:
-          node-version: '$NODE_VERSION'
-          cache: $CACHE
+          node-version: '$NODE_VERSION'$CACHE_LINE
+"
+fi
+
+# ---------- ジョブの組み立て ----------
+
+QUALITY_JOB=""
+if [ -n "$STEPS" ]; then
+  QUALITY_JOB="
+  quality:
+    name: Lint / Types / Test / Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+${SETUP}${NODE_SETUP}      - name: install
+        run: $INSTALL_CMD
+$STEPS
 "
 fi
 
@@ -190,27 +290,13 @@ ${SETUP}${NODE_SETUP}      - name: install
   DETECTED="$DETECTED e2e"
 fi
 
-QUALITY_JOB=""
-if [ -n "$STEPS" ]; then
-  QUALITY_JOB="
-  quality:
-    name: Lint / Types / Test / Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-${SETUP}${NODE_SETUP}      - name: install
-        run: $INSTALL_CMD
-$STEPS
-"
-fi
-
 CONTENT="# このプロジェクトの CI
 #
 # .claude/scripts/bootstrap-project.sh が package.json の scripts を検出して生成した。
 # 以後は手で管理してよい。ブートストラップは既存の ci.yml を上書きしない。
 #
 # 検出したパッケージマネージャ: $PM
+# Node のバージョン: ${NODE_VERSION}（${NODE_SOURCE}）
 # 生成日: $(date +%Y-%m-%d)
 
 name: CI
@@ -249,6 +335,6 @@ printf '%s\n' "$CONTENT" > "$WORKFLOW_FILE" || { note "ERROR: ci.yml を書き�
 [ -s "$WORKFLOW_FILE" ] || { note "ERROR: ci.yml の書き込みに失敗した。"; exit 1; }
 
 note "CI ワークフローを生成した: .github/workflows/ci.yml"
-note "  パッケージマネージャ: $PM / Node: $NODE_VERSION"
+note "  パッケージマネージャ: $PM / Node: ${NODE_VERSION}（${NODE_SOURCE}）"
 note "  検出したジョブ:$DETECTED"
 note "  内容を確認してからコミットしろ。以後この生成は走らない（既存ファイルは上書きしない）。"

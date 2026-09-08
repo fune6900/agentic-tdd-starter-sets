@@ -61,3 +61,31 @@ status: active
 - **もう1件**: pnpm/yarn で `npx playwright install` を使うとローカル解決に失敗しうるため、
   マネージャごとの exec（pnpm exec / bunx）に切り替えた
 - **次**: G1〜G4
+
+## 2026-09-08T12:48Z / #6 / gates — G4 レビュー差し戻し対応
+
+- **結果**: `sub-agent-evaluator` の独立レビューで ❌ 差し戻し。重要度「高」3件・「中」4件・「低」2件
+- **落ちた内容（高）**: 全て実機で再現された
+  1. `npm test -- --run` を無条件に付けており、Jest プロジェクトの CI が100%赤くなる
+     （レビュアーが実際に `npm install jest` して `Unrecognized CLI Parameter: run` を再現）
+  2. `pnpm/action-setup@v4` を `version` 入力なしで使っており、`packageManager` フィールドが
+     無い pnpm プロジェクトで Action 自体が落ちる（公式 README の必須条件で裏付け）
+  3. `engines.node: ">=18 <21"` から数字だけ抜いて `1821` という無効なバージョンを生成していた
+- **なぜ見落としたか**:
+  - 「実在するスクリプトだけをジョブ化する」という**検出**の正しさばかり検証し、
+    **生成物が導入先で実際に動くか**を検証していなかった。生成した YAML を目視で1パターン確認しただけ
+  - 特に 3 は、レビュー依頼文で自分が「範囲指定の場合どうなるか確認しろ」と名指しした項目だった。
+    危ないと分かっていながら自分では試さず、他人に投げていた
+- **対処**:
+  - テストランナーの推測をやめ、`vitest` が依存関係にあるときだけ `--run` を付ける
+  - `packageManager` の有無を見て、無ければロックファイルの `lockfileVersion` から pnpm major を推定して明示
+  - `engines.node` は単項の単純指定のみ採用。範囲/OR は警告して既定へ倒す（推測しない）
+  - `bun test` → `bun run test`（scripts.test を尊重する）
+  - ロックファイルが無い場合は `cache:` を出さない（"Dependencies lock file is not found" 対策）
+  - 複数ロックファイル検出時に警告
+- **テスト側の穴も塞いだ**: jq 不在パスのテスト追加 / 壊れた JSON の警告文言を検証 /
+  YAML 検査が PyYAML 不在で黙って縮退しないよう CI で明示インストール + node-version の意味検証を追加
+- **自分でも同じ罠を踏んだ**: 修正中に `${NODE_VERSION}（${NODE_SOURCE}）` を裸で書き、
+  多バイト隣接の unbound variable を再発させた。**自分で作った shell-lint が即座に検出した。**
+  ハーネスが機能している証拠だが、3回目である事実は重い
+- **再検証**: 高3件・中2件の修正を巻き戻す変異を注入し、66件中10件が FAIL することを確認

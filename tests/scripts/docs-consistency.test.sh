@@ -73,7 +73,8 @@ suite "docs: スクリプト参照"
 missing=""
 while IFS= read -r script; do
   [ -f "$script" ] || missing="$missing $script"
-done < <(grep -rhoE '\.claude/scripts/[a-z-]+\.sh' CLAUDE.md AGENTS.md README.md .claude .codex 2>/dev/null | sort -u)
+done < <(grep -rhoE '\.claude/scripts/[a-z-]+\.sh' \
+           CLAUDE.md AGENTS.md README.md .claude .codex .github 2>/dev/null | sort -u)
 
 it "ドキュメントが参照する全スクリプトが実在する"
 assert_eq "$(echo "$missing" | tr -s ' ')" ""
