@@ -11,6 +11,12 @@ Thumbs.db
 .claude/memory/loop-state.json.tmp.*
 .worktrees/
 
+# 外部記憶: journal/<epic>.md は別端末への引き継ぎ資産なのでコミットする。
+# 端末ごとに違うポインタ類だけを除外する。
+.claude/memory/journal/.vault
+.claude/memory/journal/.active
+.claude/memory/journal/.project
+
 # Claude Code local
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

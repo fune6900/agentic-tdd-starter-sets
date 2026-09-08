@@ -22,10 +22,14 @@ Reflection を実行し、**失敗を言語化して外部メモリに記録す�
 推測を書かないために、まず事実を集める。
 
 ```bash
-bash .claude/scripts/loop-state.sh show     # retry 回数・ゲート結果・history
+bash .claude/scripts/loop-state.sh show      # retry 回数・ゲート結果・history
+bash .claude/scripts/loop-journal.sh context # このエピックの経緯（節目ごとの記録）
 git log --oneline main..HEAD                 # 何をどう直したか
 git diff main...HEAD --stat                  # 変更範囲
 ```
+
+ジャーナルには「なぜその実装にしたか」が節目ごとに残っている。
+**教訓の材料はそこにある。** 記憶から書き起こさず、記録から抽出しろ。
 
 収集する事実:
 - どのゲートで、何回、何が落ちたか
@@ -114,3 +118,6 @@ grep -n "次回ルール" .claude/memory/lessons.md
 - **憶測を書かない**: 原因が特定できていない場合は「未確定」と明記する。断定した誤情報は、次のセッションを間違った方向に誘導する。
 - **肥大化させない**: `lessons.md` が30項目を超えたらカテゴリ整理と陳腐化項目の削除をマスターに提案する。
 - **コミットする**: `lessons.md` はチームと未来のセッションの共有資産。ローカルに置き去りにしない。
+- **ジャーナルと混同しない**: ジャーナル（`.claude/memory/journal/`）は経緯であり、エピック完了時に
+  Vault へ移って**リポジトリから消える**。次回ルールをジャーナルに書くと消える。`lessons.md` に書け。
+  逆に、経緯の細部を `lessons.md` に書き込むな。あそこは次回ルールの置き場だ。

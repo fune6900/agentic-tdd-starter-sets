@@ -51,7 +51,7 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
 | ③ | スキル（ハーネス） | `.claude/rules/` + `.claude/hooks/` |
 | ④ | プラグイン / コネクター | `gh` CLI, Playwright MCP, Chrome DevTools MCP, Context7 MCP |
 | ⑤ | サブエージェント | `.claude/agents/` 11体 |
-| ＋1 | **メモリ** | `.claude/memory/` |
+| ＋1 | **メモリ** | `.claude/memory/` + 外部 Obsidian Vault（`.claude/scripts/loop-journal.sh`） |
 
 詳細: `.claude/rules/loop-engineering.md`
 
@@ -106,10 +106,13 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
     ├── memory/                  # ＋1: 外部メモリ（ループの学習）
     │   ├── README.md            # メモリ層の運用ルール
     │   ├── lessons.md           # 教訓ログ（コミットする）
+    │   ├── journal/             # インナーループの経緯（コミットする・flush 後に削除）
+    │   │   └── README.md        # 内部ジャーナルの運用ルール
     │   ├── epics/               # エピック分解結果
     │   └── loop-state.json      # 実行時状態（gitignore）
     ├── scripts/                 # ループ制御
     │   ├── loop-state.sh        # ハードストップの実体
+    │   ├── loop-journal.sh      # ＋1 外部記憶（Vault への書き出し）
     │   └── worktree.sh          # ②ワークツリー
     ├── hooks/                   # PreToolUse / PostToolUse / Stop フック
     │   ├── pre-tool-guard.sh    # 危険コマンド検知
@@ -163,6 +166,8 @@ rm -rf .agentic-tdd-starter-temp
 - `.claude/rules/conventions.md` の `features/` 配下のディレクトリ名を実プロジェクトに合わせる
 - 不要なエージェント/コマンド（例: `sub-agent-knowledge`, `knowledge-update`）は削除してよい
 - **ハードストップの上限**を調整する（`.claude/rules/loop-engineering.md`、または環境変数 `LOOP_MAX_RETRY` / `LOOP_MAX_MINUTES` / `LOOP_MAX_SAME_GATE_FAIL`）
+- **外部記憶を使う場合**: `bash .claude/scripts/loop-journal.sh init <vault-path>` で Obsidian Vault を接続する。
+  Vault 側に `projects/<project>.md` が作られる。接続情報は端末ごとのローカル設定でコミットされない
 - **自動化を使う場合**: `.github/workflows/loop-automation.yml` に Secrets（`ANTHROPIC_API_KEY`）を設定し、
   `loop:ready` / `loop:halted` ラベルを作成する。コストが読めるまで `schedule` は無効のままにする
 - `jq` が必要（ループ状態管理とフックで使用）
@@ -174,6 +179,7 @@ rm -rf .agentic-tdd-starter-temp
 | `git` (2.5+) | worktree による作業領域分離 | ✅ |
 | `jq` | ループ状態の読み書き・フック | ✅ |
 | `gh` | Issue / PR 操作 | ループを GitHub で回す場合 |
+| Obsidian Vault | 外部記憶（`projects/<project>.md`） | セッション跨ぎの記録を残す場合 |
 
 ### 3. Claude Code / Codex で読み込む
 
@@ -267,13 +273,56 @@ bash .claude/scripts/loop-state.sh check                   # 判定（exit 1 で
 
 ## 🧠 メモリ（ループの学習）
 
+メモリは**2層**。リポジトリの中と外に分ける。
+
+```
+外部（Obsidian Vault）  <VAULT>/projects/<project>.md
+  … アウターループの節目 + 完了エピックの全記録。永続・追記のみ・リポジトリ外
+        ↑ flush（アウターループ完了時に1回だけ）
+内部（Git 管理）        .claude/memory/journal/<epic-slug>.md
+  … インナーループの節目4点。別端末への引き継ぎのためコミットする。flush 後に削除
+```
+
 | ファイル | 内容 | Git |
 | --- | --- | --- |
-| `.claude/memory/lessons.md` | 教訓（失敗と対処の言語化） | **コミットする** |
+| `.claude/memory/lessons.md` | 教訓（次回ルール） | **コミットする** |
+| `.claude/memory/journal/<epic>.md` | 経緯（何をやって、なぜそうしたか） | **コミットする** |
 | `.claude/memory/epics/` | エピック分解結果 | **コミットする** |
 | `.claude/memory/loop-state.json` | 実行時状態 | gitignore |
+| `<VAULT>/projects/<project>.md` | 完了エピックの全記録 | 対象外（Vault 側） |
 
-**メモリの無いループは、ただの順次実行。** Issue 完了時の `/loop-retro` を飛ばした時点で学習は止まる。
+### 使い方
+
+```bash
+# 1. Vault を接続する（端末ごとに1回。省略で自動検出）
+bash .claude/scripts/loop-journal.sh init "/path/to/Obsidian Vault"
+
+# 2. ★新しいタスクの最初の行動。読むべき記録が出力される
+bash .claude/scripts/loop-journal.sh context
+
+# 3. インナーループの節目（4点）を内部ジャーナルへ
+bash .claude/scripts/loop-journal.sh inner 42 impl "記事検索" <<'ENTRY'
+- **やったこと**: Server Action と Zod スキーマを追加
+- **なぜ**: 戻り値を Zod から導出しないと any に落ちる（過去の教訓）
+ENTRY
+
+# 4. アウターループの節目は Vault へ直接
+bash .claude/scripts/loop-journal.sh outer plan "分解完了" <<< "- 3本に分解した"
+
+# 5. エピック完了時。内部ジャーナルを Vault へ書き写して削除する
+bash .claude/scripts/loop-journal.sh flush <<< "- 完了"
+
+# 状態確認
+bash .claude/scripts/loop-journal.sh status
+```
+
+**読む先の判定は自動。** 進行中のエピックがあれば内部ジャーナル、無ければ Vault。
+
+`flush` は Vault への着地を確認するまで内部ジャーナルを削除しない。
+Vault が繋がっていない端末では失敗してジャーナルを残す。**記録は落とさない。**
+
+**メモリの無いループは、ただの順次実行。** Issue 完了時の `/loop-retro` と
+エピック完了時の `flush` を飛ばした時点で学習は止まる。
 
 ---
 
