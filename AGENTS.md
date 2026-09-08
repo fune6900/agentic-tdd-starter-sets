@@ -68,6 +68,19 @@ Codex では `.claude/` を source of truth としつつ、Codex 固有の実行
 - `.codex/quality-gate.md`: Codex 向け完了前チェック
 - `.codex/hooks/`: Codex/Claude 両対応を意識した安全・整形・品質チェック用フック
 
+## 初回セットアップ
+
+Codex には `SessionStart` フックが無いため、CI の自動生成は起動しません。
+このテンプレートを導入した直後に一度だけ手で実行してください。
+
+```bash
+bash .claude/scripts/bootstrap-project.sh --dry-run   # 生成される内容を確認
+bash .claude/scripts/bootstrap-project.sh             # 生成
+```
+
+`package.json` の `scripts` を検出して `.github/workflows/ci.yml` を生成します。
+既存の `ci.yml` は上書きしません。スタックを検出できない場合は何も生成しません。
+
 ## Codex 運用ルール
 
 - 機能開発とバグ修正では TDD を使う。まずテストを作成または更新し、意図した理由で失敗することを確認してから、通過に必要な最小変更を実装する。

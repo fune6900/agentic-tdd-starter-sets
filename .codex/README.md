@@ -38,6 +38,18 @@ Codex 用の実行手順は以下:
 **新しいタスクの最初の行動は `bash .claude/scripts/loop-journal.sh context`。**
 進行中のエピックがあれば内部ジャーナル、無ければ Vault の直近エピックが出力されます。
 
+## 初回セットアップ
+
+Codex には `SessionStart` フックが無いため、導入先 CI の自動生成は起動しません。
+導入直後に一度だけ実行してください。
+
+```bash
+bash .claude/scripts/bootstrap-project.sh
+```
+
+`package.json` の `scripts` から `.github/workflows/ci.yml` を生成します。
+既存ファイルは上書きせず、検出できない場合は何も生成しません（冪等）。
+
 ## 運用
 
 Codex はまず `AGENTS.md` を読み、必要に応じてこのディレクトリの該当ファイルを参照します。

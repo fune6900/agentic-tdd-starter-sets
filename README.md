@@ -122,8 +122,9 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
     ├── scripts/                 # ループ制御
     │   ├── loop-state.sh        # ハードストップの実体
     │   ├── loop-journal.sh      # ＋1 外部記憶（Vault への書き出し）
+    │   ├── bootstrap-project.sh # 導入先の CI を初回起動時に生成
     │   └── worktree.sh          # ②ワークツリー
-    ├── hooks/                   # PreToolUse / PostToolUse / Stop フック
+    ├── hooks/                   # SessionStart / PreToolUse / PostToolUse / Stop フック
     │   ├── pre-tool-guard.sh    # 危険コマンド検知
     │   ├── loop-guard.sh        # ハードストップ後の続行をブロック
     │   ├── post-tool-format.sh  # 編集後 prettier 自動実行
@@ -287,10 +288,38 @@ CI は `.github/workflows/template-ci.yml`。`pull_request` と `main` への pu
 構文検査 / shellcheck（warning 以上ゼロ）/ 上記テスト / 後片付けの確認を行う。
 **これはテンプレート自身の CI であり、導入先にはコピーしない。**
 
-### 導入先の CI
+### 導入先の CI（自動生成）
 
-導入先プロジェクトの CI は、初回起動時に導入先のスタックを検出して
-`.github/workflows/ci.yml` として自動生成される（既存の `ci.yml` があれば上書きしない）。
+導入先プロジェクトの CI は**初回起動時に自動生成される**。
+`SessionStart` フックが `.claude/scripts/bootstrap-project.sh` を呼び、
+`package.json` の `scripts` を検出して `.github/workflows/ci.yml` を1本だけ作る。
+
+```bash
+# 手動でも実行できる
+bash .claude/scripts/bootstrap-project.sh --dry-run   # 生成される内容を確認する
+bash .claude/scripts/bootstrap-project.sh             # 生成する
+```
+
+**生成される内容は検出結果で決まる。** 存在しないスクリプトのジョブは作らない。
+
+| 検出対象 | 生成されるもの |
+| --- | --- |
+| `scripts.lint` / `typecheck` / `test` / `build` | `quality` ジョブの対応ステップ |
+| `scripts.e2e` | 独立した `e2e` ジョブ（ブラウザ取得 + 失敗時のレポート保存） |
+| `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` | パッケージマネージャと install コマンド |
+| `.nvmrc` / `engines.node` | Node のバージョン（既定 22） |
+
+**何もしない条件**（人のリポジトリを壊さないための原則）:
+
+- `.github/workflows/ci.yml` が既に存在する → **上書きしない**
+- `package.json` が無い → スタックを検出できないので生成しない（このテンプレート自身がこれ）
+- 対象スクリプトが1つも無い → 生成しない
+- `LOOP_BOOTSTRAP=0` → 完全に無効化
+
+冪等なので、何度実行しても結果は変わらない。
+
+> Codex には `SessionStart` フックが無いため自動起動しない。
+> 導入直後に `bash .claude/scripts/bootstrap-project.sh` を1回実行すること。
 
 ---
 
