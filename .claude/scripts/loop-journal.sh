@@ -40,6 +40,41 @@ now_iso() { date -u +%Y-%m-%dT%H:%MZ; }
 today() { date +%Y-%m-%d; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# ---------- 入力検証 ----------
+# slug と project 名は必ずパスの一部になる。ディレクトリを跨がせない。
+# 検証は必ず親シェルで行うこと。$( ) の中で die を呼んでもサブシェルしか死なない。
+
+valid_slug() {
+  # 英数字で始まり、英数字 . _ - のみ。'/' と '..' は不可。
+  case "${1:-}" in
+    *..*) return 1 ;;
+  esac
+  printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+}
+
+require_slug() {
+  valid_slug "${1:-}" || die "${2:-slug} に使えない文字が入っている: '${1:-}'
+  英数字で始まり、英数字 . _ - のみ使える。'/' と '..' は不可（パスを跨ぐため）。
+  ブランチ名から導出する場合、'/' は '-' に置換される（例: epic/a/b → a-b）。"
+}
+
+require_safe_name() {
+  # プロジェクト名は日本語等も許すが、パス区切りと .. だけは通さない。
+  case "${1:-}" in
+    "" | */* | *..*) die "${2:-名前} にパス区切りや '..' は使えない: '${1:-}'" ;;
+  esac
+}
+
+# 削除・上書きの直前に、対象が本当にジャーナルディレクトリ直下かを再検証する（多層防御）。
+assert_in_journal_dir() {
+  local f="${1:-}" d jd
+  [ -n "$f" ] || die "assert_in_journal_dir: パスが空だ。"
+  d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || die "パスを解決できない: $f"
+  jd="$(cd "$JOURNAL_DIR" 2>/dev/null && pwd -P)" || die "ジャーナルディレクトリを解決できない: $JOURNAL_DIR"
+  [ "$d" = "$jd" ] || die "ジャーナル以外のファイルを操作しようとした: $f
+  許可されるのは $jd の直下だけだ。"
+}
+
 # ---------- 解決 ----------
 
 project_name() {
@@ -80,7 +115,8 @@ resolve_epic() {
   local branch
   branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
   case "$branch" in
-    epic/*) echo "${branch#epic/}"; return 0 ;;
+    # worktree.sh と同じ規約でスラッシュを潰す。epic/a/b は a-b になる。
+    epic/*) printf '%s\n' "${branch#epic/}" | tr '/' '-'; return 0 ;;
   esac
 
   local files count
@@ -164,10 +200,11 @@ EOF
 # ---------- context（新規タスクの最初の行動） ----------
 
 cmd_context() {
-  local epic jf vf
-  epic="$(resolve_epic "${1:-}")" || epic=""
+  local epic jf vf given="${1:-}"
+  epic="$(resolve_epic "$given")" || epic=""
 
   if [ -n "$epic" ]; then
+    require_slug "$epic" "エピック slug"
     jf="$(journal_file "$epic")"
     if [ -f "$jf" ]; then
       cat <<EOF
@@ -182,6 +219,11 @@ EOF
       echo "──── ここまでが前回までの経緯。続きから始めろ。 ────"
       return 0
     fi
+  fi
+
+  if [ -n "$given" ]; then
+    echo "注記: 指定された '${given}' の内部ジャーナルは存在しない（未着手、または flush 済み）。"
+    echo "      以下は特定エピックの記録ではなく、Vault の直近エピック全体だ。"
   fi
 
   if vf="$(vault_file)" && [ -f "$vf" ]; then
@@ -216,9 +258,11 @@ EOF
 cmd_start() {
   local epic="${1:-}" title="${2:-}"
   [ -n "$epic" ] || die "エピック slug を指定しろ。"
+  require_slug "$epic" "エピック slug"
   mkdir -p "$JOURNAL_DIR"
   local jf
   jf="$(journal_file "$epic")"
+  assert_in_journal_dir "$jf"
 
   if [ ! -f "$jf" ]; then
     cat > "$jf" <<EOF
@@ -237,6 +281,8 @@ status: active
 
 $ENTRY_MARKER
 EOF
+    # リダイレクト失敗を成功と報告しない（set -e が無いため明示的に確認する）
+    [ -s "$jf" ] || die "内部ジャーナルを作成できなかった: $jf"
     echo "内部ジャーナルを作成した: $jf"
   else
     echo "既存の内部ジャーナルを再利用する: $jf"
@@ -265,7 +311,9 @@ cmd_inner() {
 
   local epic jf body
   epic="$(resolve_epic)" || die "エピックが特定できない。'loop-journal.sh start <epic-slug>' を先に実行しろ。"
+  require_slug "$epic" "エピック slug"
   jf="$(journal_file "$epic")"
+  assert_in_journal_dir "$jf"
   [ -f "$jf" ] || die "内部ジャーナルが無い: ${jf}（'loop-journal.sh start $epic' を実行しろ）"
 
   body="$(read_body)" || exit 1
@@ -288,6 +336,7 @@ cmd_outer() {
 
   local epic body vf
   epic="$(resolve_epic)" || epic="unknown"
+  require_slug "$epic" "エピック slug"
   body="$(read_body)" || exit 1
 
   if ! vf="$(vault_file)" || [ ! -f "$vf" ]; then
@@ -338,7 +387,10 @@ touch_updated() {
 cmd_flush() {
   local epic jf vf body tmp header
   epic="$(resolve_epic "${1:-}")" || die "エピックが特定できない。slug を引数で指定しろ。"
+  require_slug "$epic" "エピック slug"
   jf="$(journal_file "$epic")"
+  # 削除まで到達する経路なので、パスの封じ込めを rm の前に二重で確認する。
+  assert_in_journal_dir "$jf"
   [ -f "$jf" ] || die "内部ジャーナルが無い: $jf"
   # die はサブシェル内では親を殺せない。判定は必ず親側で行う。
   vf="$(vault_file)" || die "Vault が未接続だ。'loop-journal.sh init <vault-path>' を先に実行しろ。ジャーナルは残した: $jf"
@@ -349,6 +401,15 @@ cmd_flush() {
 
   header="## $(today) / epic: $epic / complete"
   tmp="$(mktemp)" || die "一時ファイルを作れない。ジャーナルは残した: $jf"
+
+  # 同じ見出しが既にあると「書けたか」の判定が誤爆する。実測で判定するので致命ではないが警告は出す。
+  if grep -qF "$header" "$vf"; then
+    echo "WARN: 同じエピックの complete 見出しが既に Vault にある: $header" >&2
+    echo "WARN: 前回の flush が中断した可能性がある。追記後に Vault を目視で確認しろ。" >&2
+  fi
+
+  local before after appended
+  before="$(wc -l < "$vf" | tr -d " ")"
 
   {
     echo
@@ -373,12 +434,17 @@ cmd_flush() {
     die "Vault への追記に失敗した。ジャーナルは残した: $jf"
   fi
   rm -f "$tmp"
+
+  # 「見出しがどこかに在る」ではなく「今回この分だけ増えた」を実測して判定する。
+  after="$(wc -l < "$vf" | tr -d " ")"
+  appended=$(( after - before ))
+  [ "$appended" -gt 0 ] || die "Vault に1行も追記されていない。ジャーナルは残した: $jf"
+  tail -n "$appended" "$vf" | grep -qF "$header" \
+    || die "Vault への書き込みが確認できない。ジャーナルは残した: $jf"
+
   touch_updated "$vf"
 
-  if ! grep -qF "$header" "$vf"; then
-    die "Vault への書き込みが確認できない。ジャーナルは残した: $jf"
-  fi
-
+  assert_in_journal_dir "$jf"
   rm -f "$jf"
   if [ -s "$ACTIVE_PTR" ] && [ "$(head -1 "$ACTIVE_PTR")" = "$epic" ]; then
     rm -f "$ACTIVE_PTR"
@@ -432,6 +498,9 @@ cmd_status() {
   done
   [ "$found" -eq 1 ] || echo "  （なし）"
 }
+
+# プロジェクト名は Vault 側のファイル名になる。ディスパッチ前に一度だけ検証する。
+require_safe_name "$(project_name)" "プロジェクト名"
 
 case "${1:-}" in
   init)    shift; cmd_init "$@" ;;
