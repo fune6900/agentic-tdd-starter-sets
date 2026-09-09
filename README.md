@@ -166,6 +166,14 @@ cp /tmp/agentic-tdd-starter/.github/workflows/loop-automation.yml .github/workfl
 rm -rf /tmp/agentic-tdd-starter
 ```
 
+> **手元のチェックアウトから直接 `cp -r .claude .` しないこと。**
+> `.claude/memory/journal/.vault`（端末ごとの Vault パス）は `.gitignore` 済みで
+> clone には含まれないが、作業ツリーを丸ごとコピーすると付いてくる。
+> 上のように**必ず clone してからコピーする**。
+>
+> 間違えて持ち込んだ場合も、ポインタはプロジェクト名で紐付いているため接続は拒否される
+> （記録は内部ジャーナルに残る）。`loop-journal.sh init` で繋ぎ直せばよい。
+
 または degit:
 
 ```bash

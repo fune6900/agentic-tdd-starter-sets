@@ -128,21 +128,75 @@ assert_in_journal_dir() {
 
 project_name() {
   if [ -n "${LOOP_PROJECT_NAME:-}" ]; then echo "$LOOP_PROJECT_NAME"; return 0; fi
-  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR"; return 0; fi
+  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR" | tr -d '\r'; return 0; fi
+
+  # git worktree では PROJECT_DIR が作業領域を指すため、basename はブランチ名になる。
+  # そのままだと worktree ごとに別のプロジェクト名になり、Vault の記録が散る。
+  # 共通の .git を辿って本体のリポジトリ名を得る。
+  local common
+  common="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$common" ] && [ "$common" != "." ]; then
+    basename "$(dirname "$common")"
+    return 0
+  fi
+
   basename "$PROJECT_DIR"
 }
 
 vault_dir() {
+  # 環境変数が最優先。明示的に指定された以上、持ち主の意図として扱う。
   local v="${LOOP_VAULT_DIR:-}"
-  # .vault はコミット対象外だが、既にコミットされていれば checkout で持ち込める。
-  # 全パスの基底になる値なので、絶対パスであることと改行が無いことを確かめる。
-  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR" | tr -d '\r')"; fi
-  [ -n "$v" ] || return 1
-  case "$v" in
+  if [ -n "$v" ]; then
+    case "$v" in
+      /*) echo "$v"; return 0 ;;
+      *) echo "WARN: LOOP_VAULT_DIR が絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+    esac
+  fi
+
+  [ -s "$VAULT_PTR" ] || return 1
+
+  # ポインタは 1行目に Vault のパス、2行目にこれを作ったプロジェクト名を持つ。
+  #
+  # このファイルは .gitignore 済みだが、**作業ツリーごと cp でコピーすると付いてくる**。
+  # 「手元のチェックアウトから .claude/ を直接コピーして別プロジェクトに導入する」は
+  # 現実によくやる手順で、そのとき別プロジェクトの記録が元の持ち主の Vault へ流れ込む。
+  # Vault はリポジトリ外＝権限設定も .gitignore も届かず、多くはクラウド同期される。
+  # **名前を突き合わせて、自分のものでなければ使わない。**
+  local ptr_path ptr_project current
+  ptr_path="$(sed -n '1p' "$VAULT_PTR" | tr -d '\r')"
+  ptr_project="$(sed -n '2p' "$VAULT_PTR" | tr -d '\r')"
+
+  case "$ptr_path" in
     /*) ;;
-    *) echo "WARN: Vault のパスが絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+    *) echo "WARN: Vault のパスが絶対パスではない: '$ptr_path'（無視する）" >&2; return 1 ;;
   esac
-  echo "$v"
+
+  current="$(project_name)"
+
+  if [ -z "$ptr_project" ]; then
+    cat >&2 <<MSG
+WARN: Vault ポインタにプロジェクト名が無い（古い形式、または他所からコピーされた）。
+      どのプロジェクト用に作られたポインタか確認できないため使わない。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+    return 1
+  fi
+
+  if [ "$ptr_project" != "$current" ]; then
+    cat >&2 <<MSG
+WARN: Vault ポインタが別のプロジェクトのものだ。使わない。
+      ポインタが指すプロジェクト: ${ptr_project}
+      いま作業しているプロジェクト: ${current}
+      他所から .claude/ をコピーして持ち込まれた可能性が高い。
+      このプロジェクトの記録を他人の Vault へ書かないため、接続を拒否する。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+    return 1
+  fi
+
+  echo "$ptr_path"
 }
 
 vault_file() {
@@ -251,7 +305,9 @@ EOF
     echo "既存のプロジェクトファイルを再利用する: $file"
   fi
 
-  printf '%s\n' "$vault" > "$VAULT_PTR"
+  # 1行目: Vault のパス / 2行目: このポインタを作ったプロジェクト名。
+  # 名前を持たせておかないと、他所からコピーされたポインタを見分けられない。
+  printf '%s\n%s\n' "$vault" "$name" > "$VAULT_PTR"
   echo "Vault を接続した: $vault"
   echo "（接続情報は $VAULT_PTR に保存した。端末ごとの設定なので Git には乗せない）"
 }

@@ -318,6 +318,82 @@ run journal where
 assert_contains "$LAST_OUTPUT" "(未接続)"
 
 # ══════════════════════════════════════════════
+suite "loop-journal: 他プロジェクトから持ち込まれた Vault ポインタを拒む"
+# ══════════════════════════════════════════════
+# .vault は .gitignore 済みだが、作業ツリーごと cp でコピーすると付いてくる。
+# 「手元のチェックアウトから .claude/ を直接コピーする」は現実によくやる手順で、
+# そのとき別プロジェクトの記録が元の持ち主の Vault へ流れ込む。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+
+it "init はポインタにプロジェクト名を書く"
+assert_file_contains "$SANDBOX_JOURNAL/.vault" "proj"
+
+it "ポインタの1行目は Vault のパスのまま"
+assert_eq "$(sed -n '1p' "$SANDBOX_JOURNAL/.vault")" "$SANDBOX_VAULT"
+
+# 別プロジェクトへコピーされた状況を作る（ポインタはそのまま、プロジェクト名だけ変わる）
+it "別プロジェクトのポインタは使わない"
+run env LOOP_PROJECT_NAME=other-project \
+  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "拒否した理由を報告する"
+run env LOOP_PROJECT_NAME=other-project \
+  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "別のプロジェクトのものだ"
+
+it "別プロジェクトの記録が元の Vault に作られない"
+LOOP_PROJECT_NAME=other-project bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" \
+  start borrowed >/dev/null 2>&1
+printf -- '- x\n' | LOOP_PROJECT_NAME=other-project \
+  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" outer plan >/dev/null 2>&1
+assert_no_file "$SANDBOX_VAULT/projects/other-project.md"
+
+it "元のプロジェクトからは今まで通り使える"
+run journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+it "プロジェクト名の無い古い形式のポインタも使わない"
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf '%s\n' "$SANDBOX_VAULT" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "古い形式でも繋ぎ直せば使える"
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+run journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+it "LOOP_VAULT_DIR は明示指定なので常に優先される"
+new_sandbox
+run env LOOP_VAULT_DIR="$SANDBOX_VAULT" \
+  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: worktree でも同じプロジェクトとして扱う"
+# ══════════════════════════════════════════════
+# PROJECT_DIR の basename をそのまま使うと、worktree ではブランチ名になり、
+# Vault の記録がブランチごとに散る。共通の .git を辿って本体名を得る。
+
+new_sandbox
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+git -C "$SANDBOX_PROJ" worktree add -q "$SANDBOX_ROOT/wt-feat-99" -b feat/99-x 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/wt-feat-99/.claude/scripts"
+cp "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" "$SANDBOX_ROOT/wt-feat-99/.claude/scripts/"
+
+it "worktree でも本体と同じプロジェクト名になる"
+main_name="$(journal where | sed -n 's/^プロジェクト名 *: *//p')"
+wt_name="$(CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/wt-feat-99" \
+  bash "$SANDBOX_ROOT/wt-feat-99/.claude/scripts/loop-journal.sh" where \
+  | sed -n 's/^プロジェクト名 *: *//p')"
+assert_eq "$wt_name" "$main_name"
+
+# ══════════════════════════════════════════════
 suite "loop-journal: ブランチ名からの slug 導出"
 # ══════════════════════════════════════════════
 
