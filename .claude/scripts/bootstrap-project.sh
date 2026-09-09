@@ -138,11 +138,20 @@ if [ -s "$PROJECT_DIR/.nvmrc" ]; then
   # allowlist で検証し、外れたら採用しない。シングルクォート1文字で生成物が壊れる。
   NVMRC_VALUE="$(head -1 "$PROJECT_DIR/.nvmrc" | tr -d ' \t\r' | sed 's/^v//')"
   if [ -n "$NVMRC_VALUE" ]; then
-    if printf '%s' "$NVMRC_VALUE" | grep -Eq '^[A-Za-z0-9._/*-]+$'; then
+    # grep は行単位で判定するため複数行をすり抜ける。case で文字列全体を見る。
+    # 文字種に加えて形式も見る。nvm が受け付けるのは数字始まりのバージョン、
+    # lts エイリアス、node / stable の3種だけ。それ以外は生成しても CI が落ちるだけ。
+    NVMRC_OK=0
+    case "$NVMRC_VALUE" in
+      [!A-Za-z0-9]* | *[!A-Za-z0-9._/*-]* ) NVMRC_OK=0 ;;
+      node | stable | lts/* | [0-9]* )      NVMRC_OK=1 ;;
+      * )                                   NVMRC_OK=0 ;;
+    esac
+    if [ "$NVMRC_OK" -eq 1 ]; then
       NODE_VERSION="$NVMRC_VALUE"
       NODE_SOURCE=".nvmrc"
     else
-      note "WARN: .nvmrc に YAML へ埋め込めない文字が含まれる: '$NVMRC_VALUE'"
+      note "WARN: .nvmrc の値を Node のバージョンとして解釈できない: '$NVMRC_VALUE'"
       note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
     fi
   fi
@@ -152,7 +161,11 @@ if [ -z "$NODE_VERSION" ]; then
   ENGINES_NODE="$(jq -r '.engines.node // empty' "$PKG_JSON" 2>/dev/null)"
   if [ -n "$ENGINES_NODE" ]; then
     # 採用するのは単項の単純指定だけ: "22" / "22.1.0" / "18.x" / "^20.9" / ">=18"
-    if printf '%s' "$ENGINES_NODE" \
+    # grep は行単位で判定するので、まず改行を含む値を弾いてから形式を見る。
+    # （"22\n>=18 <21" は grep だけだと1行目が通り '221821' を合成していた）
+    ENGINES_SINGLE_LINE=1
+    case "$ENGINES_NODE" in *[$'\n\r']* ) ENGINES_SINGLE_LINE=0 ;; esac
+    if [ "$ENGINES_SINGLE_LINE" -eq 1 ] && printf '%s' "$ENGINES_NODE" \
         | grep -Eq '^[[:space:]]*[\^~]?(>=|>)?[[:space:]]*[0-9]+(\.[0-9x]+)*[[:space:]]*$'; then
       NODE_VERSION="$(printf '%s' "$ENGINES_NODE" | tr -cd '0-9.' | cut -d. -f1)"
       [ -n "$NODE_VERSION" ] && NODE_SOURCE="engines.node"

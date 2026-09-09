@@ -22,11 +22,32 @@ WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-$(dirname "$PROJECT_DIR")/.worktrees/$REPO_
 
 slug() { echo "$1" | tr '/' '-'; }
 
+# ブランチ名は作業領域のパスになる。'..' を通すと登録先がリポジトリの外へ出る。
+# git-strategy.md の命名規則（英数字・kebab-case）に合わせて境界で弾く。
+require_branch() {
+  local b="${1:-}"
+  [ -n "$b" ] || { echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1; }
+  case "$b" in
+    *..*|-*|/*|*/)
+      echo "ERROR: ブランチ名に使えない形式だ: '$b'" >&2
+      echo "       '..' / 先頭のハイフン / 先頭・末尾のスラッシュは不可。" >&2
+      exit 1
+      ;;
+  esac
+  # grep は行単位で判定するため複数行入力をすり抜ける。case は文字列全体を見る。
+  case "$b" in
+    [!A-Za-z0-9]* | *[!A-Za-z0-9._/-]* )
+      echo "ERROR: ブランチ名に使えない文字が入っている: '$b'" >&2
+      echo "       英数字で始まり、英数字 . _ - / のみ使える（改行・空白は不可）。" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd_create() {
   local branch="${1:-}" base="${2:-main}"
-  if [ -z "$branch" ]; then
-    echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1
-  fi
+  require_branch "$branch"
+  require_branch "$base"
   local dir
   dir="$WORKTREE_ROOT/$(slug "$branch")"
 
@@ -58,13 +79,13 @@ cmd_list() { git -C "$PROJECT_DIR" worktree list; }
 
 cmd_path() {
   local branch="${1:-}"
-  [ -z "$branch" ] && { echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1; }
+  require_branch "$branch"
   echo "$WORKTREE_ROOT/$(slug "$branch")"
 }
 
 cmd_remove() {
   local branch="${1:-}"
-  [ -z "$branch" ] && { echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1; }
+  require_branch "$branch"
   local dir
   dir="$WORKTREE_ROOT/$(slug "$branch")"
 
