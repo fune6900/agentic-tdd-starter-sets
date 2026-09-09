@@ -120,4 +120,30 @@ for sub in init context start inner outer flush status where; do
 done
 assert_eq "$(echo "$undocumented" | tr -s ' ')" ""
 
+# ══════════════════════════════════════════════
+suite "docs: CI ワークフローの発火条件"
+# ══════════════════════════════════════════════
+# 受け入れ条件「pull_request と push(main) で発火する」を機械で固定する。
+# 誤って on: を消しても、CI 自身は緑のまま何も検査しなくなるため気づけない。
+
+it "template-ci.yml が pull_request で発火する"
+assert_file_contains ".github/workflows/template-ci.yml" "pull_request:"
+
+it "template-ci.yml が main への push で発火する"
+assert_file_contains ".github/workflows/template-ci.yml" "branches: [main]"
+
+it "template-ci.yml に必須の4ジョブが揃っている"
+missing=""
+for job in "shell:" "tests:" "docs:" "hygiene:"; do
+  grep -qF "  $job" .github/workflows/template-ci.yml || missing="$missing $job"
+done
+assert_eq "$(echo "$missing" | tr -s ' ')" ""
+
+it "テストランナーが CI から呼ばれている"
+assert_file_contains ".github/workflows/template-ci.yml" "bash tests/run.sh"
+
+it "loop-automation.yml は PR では発火しない"
+# ループ起動は Issue ラベル/手動のみ。PR で回すとコストが読めない
+assert_file_not_contains ".github/workflows/loop-automation.yml" "pull_request:"
+
 report

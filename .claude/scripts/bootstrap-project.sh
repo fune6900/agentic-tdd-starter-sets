@@ -267,6 +267,47 @@ else
 "
 fi
 
+# ---------- 依存の脆弱性スキャン ----------
+# security.md が「CI に npm audit を組み込む」と要求している。
+# ロックファイルが無いと監査できないので、実在する場合のみジョブを作る。
+# yarn / bun は系統（classic/berry, bun のバージョン）でコマンドが割れるため生成せず、
+# 生成物にコメントを残して導入者に委ねる。憶測で動かないコマンドを書かない。
+
+AUDIT_CMD=""
+AUDIT_NOTE=""
+if [ "$HAS_LOCK" -eq 1 ]; then
+  case "$PM" in
+    npm)  AUDIT_CMD="npm audit --audit-level=high" ;;
+    pnpm) AUDIT_CMD="pnpm audit --audit-level high" ;;
+    yarn) AUDIT_NOTE="yarn は classic と berry でコマンドが異なる（yarn audit --level high / yarn npm audit --severity high）" ;;
+    bun)  AUDIT_NOTE="bun は 1.2 以降で bun audit が使える。導入先のバージョンに合わせて追加すること" ;;
+  esac
+fi
+
+AUDIT_JOB=""
+if [ -n "$AUDIT_CMD" ]; then
+  AUDIT_JOB="
+  audit:
+    name: 依存の脆弱性スキャン
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+${SETUP}${NODE_SETUP}      - name: audit
+        # security.md: critical / high の脆弱性があれば即座に修正する。
+        # 既知の未修正脆弱性で止まる場合は --audit-level を critical に上げるか、
+        # 個別に精査した上でこのステップに continue-on-error: true を付ける。
+        run: $AUDIT_CMD
+"
+  DETECTED="$DETECTED audit"
+elif [ -n "$AUDIT_NOTE" ]; then
+  AUDIT_JOB="
+  # 依存の脆弱性スキャンは自動生成していない。
+  # $AUDIT_NOTE
+  # security.md は CI への組み込みを要求しているので、手で追加すること。
+"
+fi
+
 # ---------- ジョブの組み立て ----------
 
 QUALITY_JOB=""
@@ -336,7 +377,7 @@ concurrency:
   group: ci-\${{ github.ref }}
   cancel-in-progress: true
 
-jobs:${QUALITY_JOB}${E2E_JOB}"
+jobs:${QUALITY_JOB}${E2E_JOB}${AUDIT_JOB}"
 
 # ---------- 出力 ----------
 

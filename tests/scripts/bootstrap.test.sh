@@ -456,6 +456,51 @@ run bootstrap
 assert_contains "$LAST_OUTPUT" "ロックファイルが複数ある"
 
 # ══════════════════════════════════════════════
+suite "bootstrap: 依存の脆弱性スキャン"
+# ══════════════════════════════════════════════
+# security.md が「CI に npm audit を組み込む」と要求している。
+# その security.md を配るテンプレートの生成物がそれを満たさないのは筋が通らない。
+
+setup_target
+write_scripts '{"build": "next build"}'
+touch "$SANDBOX_PROJ/package-lock.json"
+bootstrap >/dev/null 2>&1
+
+it "npm では監査ジョブを生成する"
+assert_file_contains "$CI_FILE" "npm audit --audit-level=high"
+
+it "監査は独立したジョブにする"
+assert_file_contains "$CI_FILE" "audit:"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf "lockfileVersion: '9.0'\n" > "$SANDBOX_PROJ/pnpm-lock.yaml"
+bootstrap >/dev/null 2>&1
+
+it "pnpm では pnpm audit を使う"
+assert_file_contains "$CI_FILE" "pnpm audit --audit-level high"
+
+setup_target
+write_scripts '{"build": "next build"}'
+touch "$SANDBOX_PROJ/yarn.lock"
+bootstrap >/dev/null 2>&1
+
+it "yarn では動かないコマンドを憶測で書かない"
+# 案内コメントには書式を載せるので、実行ステップの有無で判定する
+assert_file_not_contains "$CI_FILE" "name: audit"
+
+it "yarn では手で追加するよう生成物に残す"
+assert_file_contains "$CI_FILE" "手で追加すること"
+
+setup_target
+write_scripts '{"build": "next build"}'
+bootstrap >/dev/null 2>&1
+
+it "ロックファイルが無ければ監査ジョブを作らない"
+# 監査はロックファイルを前提にする。無いまま実行しても落ちるだけ
+assert_file_not_contains "$CI_FILE" "audit:"
+
+# ══════════════════════════════════════════════
 suite "bootstrap: 冪等性と出力の妥当性"
 # ══════════════════════════════════════════════
 
