@@ -70,6 +70,15 @@ jobs:
         # 生成された YAML のパース検証に使う。無いとテストが弱いチェックへ縮退する
         run: python3 -m pip install --quiet --break-system-packages pyyaml || pip3 install --quiet pyyaml
 
+      - name: actionlint の用意
+        # 生成される CI の意味検査に使う。構文が妥当でも Action の入力仕様に反していれば
+        # 導入先の CI は落ちる。独立レビューが actionlint で実バグを1件見つけたため機械化する。
+        run: |
+          VERSION=1.7.12
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          actionlint --version
+
       - name: テスト実行
         run: bash tests/run.sh
 
@@ -82,6 +91,18 @@ jobs:
 
       - name: PyYAML の用意
         run: python3 -m pip install --quiet --break-system-packages pyyaml || pip3 install --quiet pyyaml
+
+      - name: actionlint の用意
+        # 生成される CI の意味検査に使う。構文が妥当でも Action の入力仕様に反していれば
+        # 導入先の CI は落ちる。独立レビューが actionlint で実バグを1件見つけたため機械化する。
+        run: |
+          VERSION=1.7.12
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          actionlint --version
+
+      - name: ワークフローの意味検査（actionlint）
+        run: actionlint .github/workflows/*.yml
 
       - name: 整合テスト
         run: bash tests/run.sh docs-consistency

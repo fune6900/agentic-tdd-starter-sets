@@ -133,9 +133,19 @@ NODE_VERSION=""
 NODE_SOURCE=""
 
 if [ -s "$PROJECT_DIR/.nvmrc" ]; then
-  # .nvmrc は setup-node がそのまま解釈する（lts/* エイリアスを含む）ので加工しない
-  NODE_VERSION="$(head -1 "$PROJECT_DIR/.nvmrc" | tr -d ' \t\r' | sed 's/^v//')"
-  [ -n "$NODE_VERSION" ] && NODE_SOURCE=".nvmrc"
+  # .nvmrc は setup-node がそのまま解釈する（lts/* エイリアスを含む）ので値は加工しない。
+  # ただしこの値は YAML の引用符付き文字列に埋め込まれる。engines.node と同じく
+  # allowlist で検証し、外れたら採用しない。シングルクォート1文字で生成物が壊れる。
+  NVMRC_VALUE="$(head -1 "$PROJECT_DIR/.nvmrc" | tr -d ' \t\r' | sed 's/^v//')"
+  if [ -n "$NVMRC_VALUE" ]; then
+    if printf '%s' "$NVMRC_VALUE" | grep -Eq '^[A-Za-z0-9._/*-]+$'; then
+      NODE_VERSION="$NVMRC_VALUE"
+      NODE_SOURCE=".nvmrc"
+    else
+      note "WARN: .nvmrc に YAML へ埋め込めない文字が含まれる: '$NVMRC_VALUE'"
+      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
+    fi
+  fi
 fi
 
 if [ -z "$NODE_VERSION" ]; then

