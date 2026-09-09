@@ -126,21 +126,30 @@ assert_in_journal_dir() {
 
 # ---------- 解決 ----------
 
-project_name() {
-  if [ -n "${LOOP_PROJECT_NAME:-}" ]; then echo "$LOOP_PROJECT_NAME"; return 0; fi
-  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR" | tr -d '\r'; return 0; fi
-
-  # git worktree では PROJECT_DIR が作業領域を指すため、basename はブランチ名になる。
-  # そのままだと worktree ごとに別のプロジェクト名になり、Vault の記録が散る。
-  # 共通の .git を辿って本体のリポジトリ名を得る。
+# Vault ポインタの紐付けに使う「プロジェクトの同一性」。**上書きできない値を使う。**
+#
+# project_name()（下）は Vault のファイル名を決める表示名で、`.project` や
+# LOOP_PROJECT_NAME で上書きできる。上書き可能な値で紐付けると、
+# **`.project` ごとコピーされた時点で照合が無意味になる**（実際に回避を再現した）。
+# こちらは git から導くので、.claude/ をコピーしても付いてこない。
+#
+# git worktree では PROJECT_DIR が作業領域を指し basename がブランチ名になるため、
+# 共通の .git を辿って本体のリポジトリ名を得る。
+project_identity() {
   local common
   common="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   if [ -n "$common" ] && [ "$common" != "." ]; then
     basename "$(dirname "$common")"
     return 0
   fi
-
   basename "$PROJECT_DIR"
+}
+
+# Vault 側のファイル名になる表示名。運用の都合で上書きできる。
+project_name() {
+  if [ -n "${LOOP_PROJECT_NAME:-}" ]; then echo "$LOOP_PROJECT_NAME"; return 0; fi
+  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR" | tr -d '\r'; return 0; fi
+  project_identity
 }
 
 vault_dir() {
@@ -171,7 +180,7 @@ vault_dir() {
     *) echo "WARN: Vault のパスが絶対パスではない: '$ptr_path'（無視する）" >&2; return 1 ;;
   esac
 
-  current="$(project_name)"
+  current="$(project_identity)"
 
   if [ -z "$ptr_project" ]; then
     cat >&2 <<MSG
@@ -184,9 +193,13 @@ MSG
   fi
 
   if [ "$ptr_project" != "$current" ]; then
+    # ポインタの中身は外部由来。context の出力はコンテキストに入るため、
+    # 制御文字を落として切り詰めてから載せる
+    local shown
+    shown="$(printf '%s' "$ptr_project" | tr -d '\000-\037' | cut -c1-40)"
     cat >&2 <<MSG
 WARN: Vault ポインタが別のプロジェクトのものだ。使わない。
-      ポインタが指すプロジェクト: ${ptr_project}
+      ポインタが指すプロジェクト: ${shown}
       いま作業しているプロジェクト: ${current}
       他所から .claude/ をコピーして持ち込まれた可能性が高い。
       このプロジェクトの記録を他人の Vault へ書かないため、接続を拒否する。
@@ -305,9 +318,22 @@ EOF
     echo "既存のプロジェクトファイルを再利用する: $file"
   fi
 
-  # 1行目: Vault のパス / 2行目: このポインタを作ったプロジェクト名。
-  # 名前を持たせておかないと、他所からコピーされたポインタを見分けられない。
-  printf '%s\n%s\n' "$vault" "$name" > "$VAULT_PTR"
+  # 1行目: Vault のパス / 2行目: このポインタを作ったプロジェクトの**同一性**。
+  # 表示名（$name）ではなく project_identity を書く。表示名は .project で上書きでき、
+  # そのファイルもコピーで付いてくるため、紐付けの根拠にならない。
+  local identity
+  identity="$(project_identity)"
+
+  # 別プロジェクトのポインタを黙って上書きしない。検知の機会を捨てる必要はない。
+  if [ -s "$VAULT_PTR" ]; then
+    local prev
+    prev="$(sed -n '2p' "$VAULT_PTR" | tr -d '\r' | tr -d '\000-\037' | cut -c1-40)"
+    if [ -n "$prev" ] && [ "$prev" != "$identity" ]; then
+      echo "注記: 既存の Vault ポインタは別プロジェクト（${prev}）のものだった。置き換える。"
+    fi
+  fi
+
+  printf '%s\n%s\n' "$vault" "$identity" > "$VAULT_PTR"
   echo "Vault を接続した: $vault"
   echo "（接続情報は $VAULT_PTR に保存した。端末ごとの設定なので Git には乗せない）"
 }

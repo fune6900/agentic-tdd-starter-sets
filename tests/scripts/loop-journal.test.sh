@@ -333,27 +333,71 @@ assert_file_contains "$SANDBOX_JOURNAL/.vault" "proj"
 it "ポインタの1行目は Vault のパスのまま"
 assert_eq "$(sed -n '1p' "$SANDBOX_JOURNAL/.vault")" "$SANDBOX_VAULT"
 
-# 別プロジェクトへコピーされた状況を作る（ポインタはそのまま、プロジェクト名だけ変わる）
+# 実際に別リポジトリへ .claude/ を丸ごとコピーして再現する。
+# 環境変数で名前を変えるだけの擬似再現では、上書き可能な値を使った紐付けの
+# 弱さ（.project ごとコピーされると照合が無意味になる）を検出できない。
+copied="$SANDBOX_ROOT/copied-project"
+mkdir -p "$copied"
+cp -r "$SANDBOX_PROJ/.claude" "$copied/"
+( cd "$copied" && git init -q ) 2>/dev/null
+copied_journal() {
+  CLAUDE_PROJECT_DIR="$copied" bash "$copied/.claude/scripts/loop-journal.sh" "$@"
+}
+
+it "コピー先ではポインタが引き継がれている"
+assert_file "$copied/.claude/memory/journal/.vault"
+
 it "別プロジェクトのポインタは使わない"
-run env LOOP_PROJECT_NAME=other-project \
-  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+run copied_journal where
 assert_contains "$LAST_OUTPUT" "(未接続)"
 
 it "拒否した理由を報告する"
-run env LOOP_PROJECT_NAME=other-project \
-  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+run copied_journal where
 assert_contains "$LAST_OUTPUT" "別のプロジェクトのものだ"
 
 it "別プロジェクトの記録が元の Vault に作られない"
-LOOP_PROJECT_NAME=other-project bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" \
-  start borrowed >/dev/null 2>&1
-printf -- '- x\n' | LOOP_PROJECT_NAME=other-project \
-  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" outer plan >/dev/null 2>&1
-assert_no_file "$SANDBOX_VAULT/projects/other-project.md"
+copied_journal start borrowed >/dev/null 2>&1
+printf -- '- x\n' | copied_journal outer plan >/dev/null 2>&1
+assert_no_file "$SANDBOX_VAULT/projects/copied-project.md"
+
+it "元の Vault ファイルにも書き込まれていない"
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "borrowed"
 
 it "元のプロジェクトからは今まで通り使える"
 run journal where
 assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+# ── 紐付けは上書き可能な値であってはならない ──
+# .project も LOOP_PROJECT_NAME も Vault のファイル名を決める上書き手段で、
+# .project は .vault と同じ経路でコピーされる。これで照合を抜けられては意味が無い。
+
+it ".project を一緒にコピーされても照合を抜けられない"
+printf '%s\n' "proj" > "$SANDBOX_PROJ/.claude/memory/journal/.project"
+cp "$SANDBOX_PROJ/.claude/memory/journal/.project" "$copied/.claude/memory/journal/.project"
+run copied_journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it ".project 経由でも元の Vault に書き込めない"
+copied_journal start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | copied_journal outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+it "LOOP_PROJECT_NAME で名乗り直しても抜けられない"
+run env LOOP_PROJECT_NAME=proj CLAUDE_PROJECT_DIR="$copied" \
+  bash "$copied/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "表示名の上書きは Vault のファイル名には効く（本来の用途）"
+run journal where
+assert_contains "$LAST_OUTPUT" "projects/proj.md"
+
+it "ポインタの中身は制御文字を落としてから表示する"
+printf '%s\n\033[31minjected\n' "$SANDBOX_VAULT" > "$copied/.claude/memory/journal/.vault"
+run copied_journal where
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "制御文字がそのまま出力された" ;;
+  *) pass ;;
+esac
 
 it "プロジェクト名の無い古い形式のポインタも使わない"
 new_sandbox
