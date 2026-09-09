@@ -24,9 +24,19 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${CODEX_PROJECT_DIR:-$(git rev-parse --show-t
 STATE_DIR="$PROJECT_DIR/.claude/memory"
 STATE_FILE="$STATE_DIR/loop-state.json"
 
-MAX_RETRY="${LOOP_MAX_RETRY:-3}"
-MAX_MINUTES="${LOOP_MAX_MINUTES:-60}"
-MAX_SAME_GATE_FAIL="${LOOP_MAX_SAME_GATE_FAIL:-2}"
+# 上限値は jq の --argjson に渡る。整数以外を通すと jq が落ち、
+# 空の状態ファイルが残ってハードストップが機能しなくなる。境界で弾く。
+valid_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+validated_limit() { # <値> <既定> <変数名>
+  if valid_uint "$1"; then printf '%s' "$1"; return 0; fi
+  echo "WARN: $3 が整数ではない: '$1' → 既定値 $2 を使う" >&2
+  printf '%s' "$2"
+}
+
+MAX_RETRY="$(validated_limit "${LOOP_MAX_RETRY:-3}" 3 LOOP_MAX_RETRY)"
+MAX_MINUTES="$(validated_limit "${LOOP_MAX_MINUTES:-60}" 60 LOOP_MAX_MINUTES)"
+MAX_SAME_GATE_FAIL="$(validated_limit "${LOOP_MAX_SAME_GATE_FAIL:-2}" 2 LOOP_MAX_SAME_GATE_FAIL)"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq が必要だ。インストールしてから出直せ。" >&2
@@ -41,11 +51,30 @@ require_state() {
     echo "ERROR: ループ状態が無い。先に 'loop-state.sh init <issue>' を実行しろ。" >&2
     exit 1
   fi
+  # 壊れた状態ファイルは黙って通さない。中身が読めないとハードストップの判定が
+  # 全て素通りし、上限が一切効かないまま回り続ける。**必ず止まる側に倒す。**
+  # 0 バイトのファイルは jq empty が成功する（値ゼロ個は妥当な入力）。サイズも見る。
+  if [ ! -s "$STATE_FILE" ] || ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
+    cat >&2 <<'MSG'
+ERROR: ループ状態ファイルが壊れている（空、または不正な JSON）。
+       この状態ではハードストップが機能しない。ループを続行するな。
+       中身を確認し、'loop-state.sh clear' してから init し直せ。
+MSG
+    exit 1
+  fi
 }
 
 write_state() { # stdin から JSON を受けて原子的に書く
   local tmp="$STATE_FILE.tmp.$$"
-  cat > "$tmp" && mv "$tmp" "$STATE_FILE"
+  cat > "$tmp"
+  # 生成に失敗した JSON を状態ファイルとして残さない。
+  # 空ファイルが残ると check が全て素通りし、ハードストップが無効化される。
+  if [ ! -s "$tmp" ] || ! jq empty "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "ERROR: ループ状態の生成に失敗した（不正な JSON）。既存の状態は変更しない。" >&2
+    return 1
+  fi
+  mv "$tmp" "$STATE_FILE"
 }
 
 refuse_if_halted() {
@@ -88,7 +117,7 @@ cmd_init() {
       consecutive_gate_fail: {},
       halt_reason: null,
       history: []
-    }' | write_state
+    }' | write_state || exit 1
   echo "ループ開始: issue=$issue branch=$branch${epic:+ epic=$epic} (retry上限=$MAX_RETRY / 時間上限=${MAX_MINUTES}分)"
 }
 
@@ -124,7 +153,7 @@ cmd_gate() {
          then ((.consecutive_gate_fail[$gate] // 0) + 1)
          else 0 end)
     | .history += [{type: "gate", gate: $gate, result: $result, reason: $reason, at: $at}]
-    ' "$STATE_FILE" | write_state
+    ' "$STATE_FILE" | write_state || exit 1
 
   echo "$gate: $result${reason:+ — $reason}"
   cmd_check
@@ -141,7 +170,7 @@ cmd_retry() {
     .retry += 1
     | .gates = {}
     | .history += [{type: "retry", retry: .retry, note: $note, at: $at}]
-    ' "$STATE_FILE" | write_state
+    ' "$STATE_FILE" | write_state || exit 1
   echo "差し戻し: retry=$(jq -r '.retry' "$STATE_FILE") / 上限 $(jq -r '.limits.max_retry' "$STATE_FILE")"
   cmd_check
 }
@@ -153,7 +182,7 @@ cmd_stop() {
     --arg reason "$reason" \
     --arg at "$(now_iso)" \
     '.status = "halted" | .halt_reason = $reason
-     | .history += [{type: "halt", reason: $reason, at: $at}]' "$STATE_FILE" | write_state
+     | .history += [{type: "halt", reason: $reason, at: $at}]' "$STATE_FILE" | write_state || exit 1
   cat >&2 <<MSG
 
 ════════════════════════════════════════════════
@@ -174,7 +203,7 @@ MSG
 cmd_complete() {
   require_state
   jq --arg at "$(now_iso)" \
-    '.status = "completed" | .history += [{type: "complete", at: $at}]' "$STATE_FILE" | write_state
+    '.status = "completed" | .history += [{type: "complete", at: $at}]' "$STATE_FILE" | write_state || exit 1
   echo "ループ完了: issue=$(jq -r '.issue' "$STATE_FILE") retry=$(jq -r '.retry' "$STATE_FILE")"
 }
 
@@ -188,6 +217,17 @@ cmd_check() {
   max_minutes=$(jq -r '.limits.max_minutes' "$STATE_FILE")
   max_gate_fail=$(jq -r '.limits.max_same_gate_fail' "$STATE_FILE")
   started=$(jq -r '.started_epoch' "$STATE_FILE")
+
+  # 判定に使う値が数値でなければ、比較は全て偽になり上限が素通りする。止まる側に倒す。
+  local v
+  for v in "$retry" "$max_retry" "$max_minutes" "$max_gate_fail" "$started"; do
+    if ! valid_uint "$v"; then
+      echo "ERROR: ループ状態の数値が読めない（'$v'）。判定できないので停止する。" >&2
+      echo "       'loop-state.sh show' で中身を確認しろ。" >&2
+      return 1
+    fi
+  done
+
   elapsed=$(( ( $(now_epoch) - started ) / 60 ))
 
   if [ "$status" = "halted" ]; then

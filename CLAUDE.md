@@ -51,7 +51,7 @@
 - `tests/e2e/` — Playwright E2Eテスト
 - `.claude/memory/` — ループの外部メモリ（教訓・経緯・エピック分解・実行状態）
 - `.claude/memory/journal/` — インナーループの経緯。エピック完了時に外部 Vault へ書き写して削除
-- `.claude/scripts/` — ループ制御スクリプト（ハードストップ・ワークツリー・外部記憶）
+- `.claude/scripts/` — ループ制御スクリプト（ハードストップ・ワークツリー・外部記憶・初期セットアップ）
 - `tests/` — テンプレート自身のシェルテスト（`bash tests/run.sh`）。導入先プロジェクトには持ち込まない
 
 ## 🔄 開発フロー
@@ -141,6 +141,18 @@ bash .claude/scripts/loop-journal.sh context
 **Planner → QA → Architect → Coder → Designer → G1 → G2 → G3 → G4 → (G5) → Benz（Refactor）**
 
 **作る役と検証する役を混ぜるな。** 1体に全部やらせるより、分けたほうが品質が上がる。
+
+## 🧰 初回セットアップ（導入先プロジェクト）
+
+このテンプレートを導入したプロジェクトでは、初回起動時に `SessionStart` フックが
+`.claude/scripts/bootstrap-project.sh` を実行し、`package.json` を検出して
+`.github/workflows/ci.yml` を1本だけ生成する。
+
+- **既存の `ci.yml` は絶対に上書きしない**
+- スタックを検出できなければ**何も生成しない**
+- 冪等。`LOOP_BOOTSTRAP=0` で無効化できる
+
+生成された CI は以後手で管理してよい。内容を確認してからコミットしろ。
 
 ## 🛠 スラッシュコマンド
 

@@ -46,10 +46,16 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 valid_slug() {
   # 英数字で始まり、英数字 . _ - のみ。'/' と '..' は不可。
+  #
+  # 判定に grep を使わない。grep は**行単位**で判定するため、複数行の入力を渡すと
+  # 1行目がマッチしただけで合格になる（'ok\n../evil' が通ってしまう）。
+  # case は文字列全体を1つのパターンと突き合わせるので、改行も許可外文字として弾ける。
   case "${1:-}" in
-    *..*) return 1 ;;
+    '' | *..* )             return 1 ;;
+    [!A-Za-z0-9]* )         return 1 ;;
+    *[!A-Za-z0-9._-]* )     return 1 ;;
+    * )                     return 0 ;;
   esac
-  printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 }
 
 require_slug() {
@@ -58,17 +64,60 @@ require_slug() {
   ブランチ名から導出する場合、'/' は '-' に置換される（例: epic/a/b → a-b）。"
 }
 
-require_safe_name() {
-  # プロジェクト名は日本語等も許すが、パス区切りと .. だけは通さない。
+# 記録に書く1行。改行を通すと偽の見出し（## ...）を注入でき、
+# 次のセッションが読む記憶と、flush 先の Vault の両方を汚染できる。
+sanitize_line() {
+  printf '%s' "${1:-}" | tr '\r\n\t' '   ' | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+valid_issue() {
+  # grep を使わない理由は valid_slug と同じ（行単位判定による複数行のすり抜け）
   case "${1:-}" in
-    "" | */* | *..*) die "${2:-名前} にパス区切りや '..' は使えない: '${1:-}'" ;;
+    '' )                    return 1 ;;
+    [!A-Za-z0-9]* )         return 1 ;;
+    *[!A-Za-z0-9._-]* )     return 1 ;;
+    * )                     return 0 ;;
   esac
 }
 
-# 削除・上書きの直前に、対象が本当にジャーナルディレクトリ直下かを再検証する（多層防御）。
+require_issue() {
+  valid_issue "${1:-}" || die "Issue 識別子に使えない文字が入っている: '${1:-}'
+  英数字で始まり、英数字 . _ - のみ。改行や空白は不可。
+  通すと記録に偽の見出しを注入でき、次のセッションが読む記憶が汚染される。"
+}
+
+require_safe_name() {
+  # プロジェクト名は日本語等も許すが、パス区切り・'..'・改行は通さない。
+  # 改行を通すと Vault の frontmatter に任意のキーを注入できる。
+  case "${1:-}" in
+    "" | */* | *..*)
+      die "${2:-名前} にパス区切りや '..' は使えない: '${1:-}'" ;;
+    *[$'\n\r']*)
+      die "${2:-名前} に改行は使えない（frontmatter を壊せてしまう）" ;;
+  esac
+}
+
+# 読み書き・削除の直前に、対象が本当にジャーナルディレクトリ**直下の実体ファイル**かを検証する。
+#
+# ディレクトリ部分の一致だけでは足りない。slug が '/' を通さない以上 dirname は常に
+# JOURNAL_DIR になるため、その比較だけでは**恒真の検査**になってしまう。
+# ジャーナルは Git 管理下（*.md はコミット対象）なので、悪意ある PR にシンボリックリンクを
+# 1本混ぜるだけで、context が秘密ファイルの読み出し装置に、inner が任意ファイルへの
+# 追記装置に化ける。**リンクは追わない。**
 assert_in_journal_dir() {
   local f="${1:-}" d jd
   [ -n "$f" ] || die "assert_in_journal_dir: パスが空だ。"
+
+  if [ -L "$f" ]; then
+    die "ジャーナルにシンボリックリンクがある: $f
+  リンク先を読み書きすると、ジャーナル外のファイルを晒す・書き換えることになる。
+  実体のファイルに置き換えろ。"
+  fi
+  if [ -L "$JOURNAL_DIR" ]; then
+    die "ジャーナルディレクトリがシンボリックリンクだ: $JOURNAL_DIR
+  リンク先に記録を書くと封じ込めが成立しない。実体のディレクトリにしろ。"
+  fi
+
   d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || die "パスを解決できない: $f"
   jd="$(cd "$JOURNAL_DIR" 2>/dev/null && pwd -P)" || die "ジャーナルディレクトリを解決できない: $JOURNAL_DIR"
   [ "$d" = "$jd" ] || die "ジャーナル以外のファイルを操作しようとした: $f
@@ -85,8 +134,14 @@ project_name() {
 
 vault_dir() {
   local v="${LOOP_VAULT_DIR:-}"
-  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR")"; fi
+  # .vault はコミット対象外だが、既にコミットされていれば checkout で持ち込める。
+  # 全パスの基底になる値なので、絶対パスであることと改行が無いことを確かめる。
+  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR" | tr -d '\r')"; fi
   [ -n "$v" ] || return 1
+  case "$v" in
+    /*) ;;
+    *) echo "WARN: Vault のパスが絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+  esac
   echo "$v"
 }
 
@@ -164,7 +219,11 @@ cmd_init() {
 
   if [ ! -f "$file" ]; then
     local remote
+    # リモート URL に認証情報が埋まっている場合がある（https://user:token@host/...）。
+    # Vault はリポジトリ外＝.gitignore も権限設定も届かず、多くの場合クラウド同期される。
+    # 追記専用ログなので後から消しても同期先の履歴に残る。**書く前に落とす。**
     remote="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || echo '')"
+    remote="$(printf '%s' "$remote" | sed -E 's#(://)[^/@]*@#\1#g' | tr -d '\r\n"' )"
     cat > "$file" <<EOF
 ---
 type: project-log
@@ -206,6 +265,8 @@ cmd_context() {
   if [ -n "$epic" ]; then
     require_slug "$epic" "エピック slug"
     jf="$(journal_file "$epic")"
+    # 読み出しもコンテキストへの流し込みなので、書き込みと同じ検査を通す
+    [ -e "$jf" ] || [ -L "$jf" ] && assert_in_journal_dir "$jf"
     if [ -f "$jf" ]; then
       cat <<EOF
 ════════════════════════════════════════════════
@@ -228,6 +289,8 @@ EOF
 
   if vf="$(vault_file)" && [ -f "$vf" ]; then
     local n="${LOOP_CONTEXT_EPICS:-2}"
+    # awk に渡る前に整数であることを確かめる。非数値だと比較が壊れて表示件数が狂う
+    case "$n" in ''|*[!0-9]*|0) n=2 ;; esac
     cat <<EOF
 ════════════════════════════════════════════════
  読み取り元: 外部 Obsidian Vault（新規エピックの開始）
@@ -256,7 +319,9 @@ EOF
 # ---------- start ----------
 
 cmd_start() {
-  local epic="${1:-}" title="${2:-}"
+  local epic="${1:-}" title
+  # 題名は frontmatter の二重引用符の中に入る。改行と引用符を落とす。
+  title="$(sanitize_line "${2:-}" | tr -d '"')"
   [ -n "$epic" ] || die "エピック slug を指定しろ。"
   require_slug "$epic" "エピック slug"
   mkdir -p "$JOURNAL_DIR"
@@ -302,8 +367,12 @@ read_body() {
 }
 
 cmd_inner() {
-  local issue="${1:-}" phase="${2:-}" title="${3:-}"
+  local issue phase="${2:-}" title
+  # 先頭の # は表記ゆれとして受け入れるが、それ以外は検証する
+  issue="${1:-}"; issue="${issue#\#}"
+  title="$(sanitize_line "${3:-}")"
   [ -n "$issue" ] || die "Issue 番号を指定しろ。"
+  require_issue "$issue"
   case "$phase" in
     start|impl|gates|done|halt) ;;
     *) die "phase は start / impl / gates / done / halt のいずれか。指定値: '${phase:-空}'" ;;
@@ -319,16 +388,17 @@ cmd_inner() {
   body="$(read_body)" || exit 1
   {
     echo
-    echo "## $(now_iso) / #${issue#\#} / $phase${title:+ — $title}"
+    echo "## $(now_iso) / #${issue} / $phase${title:+ — $title}"
     echo
     printf '%s\n' "$body"
   } >> "$jf"
 
-  echo "内部ジャーナルに追記した: $epic / #${issue#\#} / $phase"
+  echo "内部ジャーナルに追記した: $epic / #${issue} / $phase"
 }
 
 cmd_outer() {
-  local phase="${1:-}" title="${2:-}"
+  local phase="${1:-}" title
+  title="$(sanitize_line "${2:-}")"
   case "$phase" in
     plan|approve|integrate|note) ;;
     *) die "phase は plan / approve / integrate / note のいずれか。指定値: '${phase:-空}'" ;;
@@ -343,6 +413,7 @@ cmd_outer() {
     # Vault に届かない端末では内部ジャーナルへ退避する。記録を落とさない。
     local jf
     jf="$(journal_file "$epic")"
+    [ -e "$jf" ] || [ -L "$jf" ] && assert_in_journal_dir "$jf"
     if [ -f "$jf" ]; then
       {
         echo

@@ -8,7 +8,9 @@
 
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# 個別のテストファイルと同じく環境変数を尊重する。
+# ここで無条件に上書きすると、隔離コピーへの変異テストが実物を走らせてしまう。
+REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 export REPO_ROOT
 FILTER="${1:-}"
 

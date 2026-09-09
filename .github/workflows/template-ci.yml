@@ -66,6 +66,29 @@ jobs:
       - name: jq の確認
         run: jq --version
 
+      - name: PyYAML の用意
+        # 生成された YAML のパース検証に使う。無いとテストが弱いチェックへ縮退する
+        run: python3 -m pip install --quiet --break-system-packages "pyyaml==6.0.2" || pip3 install --quiet "pyyaml==6.0.2"
+
+      - name: actionlint の用意
+        # 生成される CI の意味検査に使う。構文が妥当でも Action の入力仕様に反していれば
+        # 導入先の CI は落ちる。独立レビューが actionlint で実バグを1件見つけたため機械化する。
+        #
+        # バージョンタグの固定だけでは足りない。GitHub Releases のアセットは同じタグのまま
+        # 差し替えられるため、**チェックサムを固定して検証してから展開する**。
+        # sudo は使わない。$HOME 配下に置けば足りる。
+        run: |
+          VERSION=1.7.12
+          SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/actionlint.tar.gz
+          echo "${SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/actionlint" --version
+
       - name: テスト実行
         run: bash tests/run.sh
 
@@ -75,6 +98,31 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - name: PyYAML の用意
+        run: python3 -m pip install --quiet --break-system-packages "pyyaml==6.0.2" || pip3 install --quiet "pyyaml==6.0.2"
+
+      - name: actionlint の用意
+        # 生成される CI の意味検査に使う。構文が妥当でも Action の入力仕様に反していれば
+        # 導入先の CI は落ちる。独立レビューが actionlint で実バグを1件見つけたため機械化する。
+        #
+        # バージョンタグの固定だけでは足りない。GitHub Releases のアセットは同じタグのまま
+        # 差し替えられるため、**チェックサムを固定して検証してから展開する**。
+        # sudo は使わない。$HOME 配下に置けば足りる。
+        run: |
+          VERSION=1.7.12
+          SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/actionlint.tar.gz
+          echo "${SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/actionlint" --version
+
+      - name: ワークフローの意味検査（actionlint）
+        run: actionlint .github/workflows/*.yml
 
       - name: 整合テスト
         run: bash tests/run.sh docs-consistency
@@ -86,8 +134,8 @@ jobs:
           try:
               import yaml
           except ImportError:
-              print("PyYAML が無いので検査をスキップする")
-              sys.exit(0)
+              print("::error::PyYAML が入っていない。YAML 検査が実行できない")
+              sys.exit(1)
           bad = 0
           for f in sorted(glob.glob(".github/workflows/*.yml")):
               try:
