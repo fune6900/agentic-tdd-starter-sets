@@ -319,7 +319,7 @@ EOF
   fi
 
   # 1行目: Vault のパス / 2行目: このポインタを作ったプロジェクトの**同一性**。
-  # 表示名（$name）ではなく project_identity を書く。表示名は .project で上書きでき、
+  # 表示名（${name}）ではなく project_identity を書く。表示名は .project で上書きでき、
   # そのファイルもコピーで付いてくるため、紐付けの根拠にならない。
   local identity
   identity="$(project_identity)"
