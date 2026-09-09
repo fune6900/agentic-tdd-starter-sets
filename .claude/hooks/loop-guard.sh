@@ -37,7 +37,7 @@ esac
 [ "$BLOCK" -eq 1 ] || exit 0
 
 cat >&2 <<MSG
-⛔ ハードストップ発動中（Issue: $ISSUE / retry: $RETRY）
+⛔ ハードストップ発動中（Issue: $ISSUE / retry: ${RETRY}）
 理由: $REASON
 
 ループの続行・コミット・PR 作成は全てブロックされた。
