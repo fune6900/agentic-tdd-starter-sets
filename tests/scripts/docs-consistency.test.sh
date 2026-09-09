@@ -146,4 +146,18 @@ it "loop-automation.yml は PR では発火しない"
 # ループ起動は Issue ラベル/手動のみ。PR で回すとコストが読めない
 assert_file_not_contains ".github/workflows/loop-automation.yml" "pull_request:"
 
+# ══════════════════════════════════════════════
+suite "docs: CI の外部依存の取得"
+# ══════════════════════════════════════════════
+# タグ固定だけでは足りない。GitHub Releases のアセットは同じタグのまま差し替えられる。
+
+it "actionlint をチェックサム検証してから展開する"
+assert_file_contains ".github/workflows/template-ci.yml" "sha256sum -c -"
+
+it "外部バイナリの取得に sudo を使わない"
+assert_file_not_contains ".github/workflows/template-ci.yml" "sudo tar"
+
+it "pip の依存はバージョンを固定する"
+assert_file_contains ".github/workflows/template-ci.yml" "pyyaml=="
+
 report

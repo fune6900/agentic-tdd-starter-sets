@@ -153,7 +153,7 @@ cmd_gate() {
          then ((.consecutive_gate_fail[$gate] // 0) + 1)
          else 0 end)
     | .history += [{type: "gate", gate: $gate, result: $result, reason: $reason, at: $at}]
-    ' "$STATE_FILE" | write_state
+    ' "$STATE_FILE" | write_state || exit 1
 
   echo "$gate: $result${reason:+ — $reason}"
   cmd_check
@@ -170,7 +170,7 @@ cmd_retry() {
     .retry += 1
     | .gates = {}
     | .history += [{type: "retry", retry: .retry, note: $note, at: $at}]
-    ' "$STATE_FILE" | write_state
+    ' "$STATE_FILE" | write_state || exit 1
   echo "差し戻し: retry=$(jq -r '.retry' "$STATE_FILE") / 上限 $(jq -r '.limits.max_retry' "$STATE_FILE")"
   cmd_check
 }
@@ -182,7 +182,7 @@ cmd_stop() {
     --arg reason "$reason" \
     --arg at "$(now_iso)" \
     '.status = "halted" | .halt_reason = $reason
-     | .history += [{type: "halt", reason: $reason, at: $at}]' "$STATE_FILE" | write_state
+     | .history += [{type: "halt", reason: $reason, at: $at}]' "$STATE_FILE" | write_state || exit 1
   cat >&2 <<MSG
 
 ════════════════════════════════════════════════
@@ -203,7 +203,7 @@ MSG
 cmd_complete() {
   require_state
   jq --arg at "$(now_iso)" \
-    '.status = "completed" | .history += [{type: "complete", at: $at}]' "$STATE_FILE" | write_state
+    '.status = "completed" | .history += [{type: "complete", at: $at}]' "$STATE_FILE" | write_state || exit 1
   echo "ループ完了: issue=$(jq -r '.issue' "$STATE_FILE") retry=$(jq -r '.retry' "$STATE_FILE")"
 }
 

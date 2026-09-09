@@ -39,10 +39,32 @@ done
 say() { [ "$QUIET" -eq 1 ] || echo "$@"; }
 note() { echo "$@"; }   # 生成したとき・警告は quiet でも必ず知らせる
 
+# 外部由来の値は**報告に一切載せない**。長さだけ返す。
+#
+# このスクリプトは SessionStart フックから自動実行され、**stdout はそのまま
+# セッションのコンテキストに入る**。package.json は clone してきた他人のリポジトリの
+# ファイルであり、攻撃者の入力とみなすべきものだ。改行入りの指示文を仕込まれれば、
+# ユーザー操作ゼロでエージェントのコンテキストが汚染される。
+# 改行を潰して切り詰めても、断片は攻撃者の制御下にある文字列のままだ。
+# 診断には「どのファイルの、何文字の値か」で足りる。中身は人間がファイルを開けば分かる。
+value_len() {
+  printf '%s' "${1:-}" | wc -c | tr -d ' '
+}
+
 # ---------- 早期離脱 ----------
 
 if [ "${LOOP_BOOTSTRAP:-1}" = "0" ]; then
   say "ブートストラップは LOOP_BOOTSTRAP=0 で無効化されている。"
+  exit 0
+fi
+
+# シンボリックリンクは追わない。[ -f ] はリンクを追うため、ダングリングリンクだと
+# 「存在しない」と判定され、リダイレクトがリンク先にファイルを作ってしまう。
+# 悪意ある PR で .github/workflows/ci.yml をリポジトリ外へのリンクにしておけば、
+# 被害者がセッションを開いた瞬間に無確認で外部へ書き込ませられる。
+if [ -L "$WORKFLOW_FILE" ] || [ -L "$WORKFLOW_DIR" ]; then
+  note "WARN: .github/workflows またはその中の ci.yml がシンボリックリンクだ。"
+  note "WARN: リンク先に書くと封じ込めが成立しないため、CI は生成しない。"
   exit 0
 fi
 
@@ -151,7 +173,7 @@ if [ -s "$PROJECT_DIR/.nvmrc" ]; then
       NODE_VERSION="$NVMRC_VALUE"
       NODE_SOURCE=".nvmrc"
     else
-      note "WARN: .nvmrc の値を Node のバージョンとして解釈できない: '$NVMRC_VALUE'"
+      note "WARN: .nvmrc の値（$(value_len "$NVMRC_VALUE") 文字）を Node のバージョンとして解釈できない。"
       note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
     fi
   fi
@@ -170,7 +192,7 @@ if [ -z "$NODE_VERSION" ]; then
       NODE_VERSION="$(printf '%s' "$ENGINES_NODE" | tr -cd '0-9.' | cut -d. -f1)"
       [ -n "$NODE_VERSION" ] && NODE_SOURCE="engines.node"
     else
-      note "WARN: engines.node が範囲/OR 指定のため一意に決められない: '$ENGINES_NODE'"
+      note "WARN: package.json の engines.node（$(value_len "$ENGINES_NODE") 文字）を一意に決められない。"
       note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
     fi
   fi
@@ -389,13 +411,22 @@ fi
 
 mkdir -p "$WORKFLOW_DIR" || { note "ERROR: $WORKFLOW_DIR を作れない。"; exit 1; }
 
-# 生成の直前に、競合していないかもう一度だけ確認する
+# 生成の直前に、リンク性と競合をもう一度確認する
+if [ -L "$WORKFLOW_FILE" ] || [ -L "$WORKFLOW_DIR" ]; then
+  note "WARN: 生成直前にシンボリックリンクを検出した。CI は生成しない。"
+  exit 0
+fi
 if [ -f "$WORKFLOW_FILE" ]; then
   say "CI ワークフローは既に存在する: .github/workflows/ci.yml（上書きしない）"
   exit 0
 fi
 
-printf '%s\n' "$CONTENT" > "$WORKFLOW_FILE" || { note "ERROR: ci.yml を書き込めない。"; exit 1; }
+# noclobber 配下で書く。検査してから書くまでの隙に差し替えられても、
+# 既存ファイル・リンクへの上書きはシェルが拒否する（TOCTOU の封鎖）。
+if ! ( set -C; printf '%s\n' "$CONTENT" > "$WORKFLOW_FILE" ) 2>/dev/null; then
+  note "ERROR: ci.yml を書き込めない（既に存在するか、書き込み先が不正）。"
+  exit 1
+fi
 [ -s "$WORKFLOW_FILE" ] || { note "ERROR: ci.yml の書き込みに失敗した。"; exit 1; }
 
 note "CI ワークフローを生成した: .github/workflows/ci.yml"

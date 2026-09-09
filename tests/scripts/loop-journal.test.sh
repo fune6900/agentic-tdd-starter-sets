@@ -247,6 +247,77 @@ run env LOOP_CONTEXT_EPICS=abc bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.
 assert_contains "$LAST_OUTPUT" "直近 2 エピック分"
 
 # ══════════════════════════════════════════════
+suite "loop-journal: シンボリックリンクを追わない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# journal/*.md は Git 管理下（コミット対象）なので、悪意ある PR にリンクを1本混ぜられる。
+# CLAUDE.md が「新しいタスクの最初の行動」と定める context が、
+# そのまま秘密ファイルの読み出し装置に化ける。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+printf 'SECRET_TOKEN=漏れてはいけない値\n' > "$SANDBOX_ROOT/secret.env"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/secret.env" "$SANDBOX_JOURNAL/leak.md"
+
+it "リンクされたジャーナルの読み出しは拒否される"
+assert_fails journal context leak
+
+it "リンク先の中身がコンテキストへ出力されない"
+run journal context leak
+case "$LAST_OUTPUT" in
+  *SECRET_TOKEN*) fail "リンク先の内容が出力された" ;;
+  *) pass ;;
+esac
+
+it "リンクされたジャーナルへの追記は拒否される"
+assert_fails eval 'echo body | LOOP_EPIC=leak journal inner 1 impl'
+
+it "リンク先が書き換わっていない"
+assert_file_not_contains "$SANDBOX_ROOT/secret.env" "body"
+
+it "リンクされたジャーナルの flush は拒否される"
+assert_fails eval 'echo summary | journal flush leak'
+
+it "flush で外部ファイルが削除されない"
+assert_file "$SANDBOX_ROOT/secret.env"
+
+it "ジャーナルディレクトリ自体がリンクなら拒否される"
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+mkdir -p "$SANDBOX_ROOT/elsewhere"
+find "$SANDBOX_JOURNAL" -depth -delete 2>/dev/null
+ln -s "$SANDBOX_ROOT/elsewhere" "$SANDBOX_JOURNAL"
+assert_fails journal start linked-dir
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 秘密情報を外へ出さない"
+# ══════════════════════════════════════════════
+# Vault はリポジトリ外＝.gitignore も権限設定も届かず、多くの場合クラウド同期される。
+# 追記専用なので、一度書くと同期先の履歴から消せない。
+
+new_sandbox
+( cd "$SANDBOX_PROJ" && git remote add origin \
+    "https://oauth2:ghp_FAKETOKENVALUE123@github.com/acme/private.git" ) 2>/dev/null
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+
+it "リモート URL の認証情報を Vault に書かない"
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "ghp_FAKETOKENVALUE123"
+
+it "認証情報を除いた URL は残す"
+assert_file_contains "$SANDBOX_VAULT/projects/proj.md" "https://github.com/acme/private.git"
+
+it "プロジェクト名の改行は拒否される"
+# 通すと Vault の frontmatter に任意のキーを注入できる
+assert_fails eval 'LOOP_PROJECT_NAME="$(printf "a\ninjected: true")" journal init "$SANDBOX_VAULT"'
+
+it "相対パスの Vault ポインタは無視される"
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf 'relative/path\n' > "$SANDBOX_JOURNAL/.vault"
+run journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+# ══════════════════════════════════════════════
 suite "loop-journal: ブランチ名からの slug 導出"
 # ══════════════════════════════════════════════
 

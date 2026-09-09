@@ -164,6 +164,30 @@ it "不正な上限で空の状態ファイルを残さない"
 assert_ok test -s "$SANDBOX_PROJ/.claude/memory/loop-state.json"
 
 # ══════════════════════════════════════════════
+suite "loop-state: 書き込み失敗を握り潰さない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# write_state が正しく拒否しても、呼び出し側が戻り値を捨てれば
+# retry が永久に加算されず、リトライ上限が一切効かなくなる。
+
+new_sandbox
+loopstate init 42 feat/42-x >/dev/null 2>&1
+chmod 500 "$SANDBOX_PROJ/.claude/memory"
+
+it "状態を書けないとき retry は失敗する"
+assert_fails loopstate retry "修正1"
+
+it "状態を書けないとき gate も失敗する"
+assert_fails loopstate gate G1 pass
+
+it "状態を書けないとき complete も失敗する"
+assert_fails loopstate complete
+
+chmod 700 "$SANDBOX_PROJ/.claude/memory"
+
+it "書けなかった分は加算されていない"
+assert_eq "$(state_field '.retry')" "0"
+
+# ══════════════════════════════════════════════
 suite "loop-state: 完了と後始末"
 # ══════════════════════════════════════════════
 

@@ -87,16 +87,37 @@ require_issue() {
 }
 
 require_safe_name() {
-  # プロジェクト名は日本語等も許すが、パス区切りと .. だけは通さない。
+  # プロジェクト名は日本語等も許すが、パス区切り・'..'・改行は通さない。
+  # 改行を通すと Vault の frontmatter に任意のキーを注入できる。
   case "${1:-}" in
-    "" | */* | *..*) die "${2:-名前} にパス区切りや '..' は使えない: '${1:-}'" ;;
+    "" | */* | *..*)
+      die "${2:-名前} にパス区切りや '..' は使えない: '${1:-}'" ;;
+    *[$'\n\r']*)
+      die "${2:-名前} に改行は使えない（frontmatter を壊せてしまう）" ;;
   esac
 }
 
-# 削除・上書きの直前に、対象が本当にジャーナルディレクトリ直下かを再検証する（多層防御）。
+# 読み書き・削除の直前に、対象が本当にジャーナルディレクトリ**直下の実体ファイル**かを検証する。
+#
+# ディレクトリ部分の一致だけでは足りない。slug が '/' を通さない以上 dirname は常に
+# JOURNAL_DIR になるため、その比較だけでは**恒真の検査**になってしまう。
+# ジャーナルは Git 管理下（*.md はコミット対象）なので、悪意ある PR にシンボリックリンクを
+# 1本混ぜるだけで、context が秘密ファイルの読み出し装置に、inner が任意ファイルへの
+# 追記装置に化ける。**リンクは追わない。**
 assert_in_journal_dir() {
   local f="${1:-}" d jd
   [ -n "$f" ] || die "assert_in_journal_dir: パスが空だ。"
+
+  if [ -L "$f" ]; then
+    die "ジャーナルにシンボリックリンクがある: $f
+  リンク先を読み書きすると、ジャーナル外のファイルを晒す・書き換えることになる。
+  実体のファイルに置き換えろ。"
+  fi
+  if [ -L "$JOURNAL_DIR" ]; then
+    die "ジャーナルディレクトリがシンボリックリンクだ: $JOURNAL_DIR
+  リンク先に記録を書くと封じ込めが成立しない。実体のディレクトリにしろ。"
+  fi
+
   d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || die "パスを解決できない: $f"
   jd="$(cd "$JOURNAL_DIR" 2>/dev/null && pwd -P)" || die "ジャーナルディレクトリを解決できない: $JOURNAL_DIR"
   [ "$d" = "$jd" ] || die "ジャーナル以外のファイルを操作しようとした: $f
@@ -113,8 +134,14 @@ project_name() {
 
 vault_dir() {
   local v="${LOOP_VAULT_DIR:-}"
-  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR")"; fi
+  # .vault はコミット対象外だが、既にコミットされていれば checkout で持ち込める。
+  # 全パスの基底になる値なので、絶対パスであることと改行が無いことを確かめる。
+  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR" | tr -d '\r')"; fi
   [ -n "$v" ] || return 1
+  case "$v" in
+    /*) ;;
+    *) echo "WARN: Vault のパスが絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+  esac
   echo "$v"
 }
 
@@ -192,7 +219,11 @@ cmd_init() {
 
   if [ ! -f "$file" ]; then
     local remote
+    # リモート URL に認証情報が埋まっている場合がある（https://user:token@host/...）。
+    # Vault はリポジトリ外＝.gitignore も権限設定も届かず、多くの場合クラウド同期される。
+    # 追記専用ログなので後から消しても同期先の履歴に残る。**書く前に落とす。**
     remote="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || echo '')"
+    remote="$(printf '%s' "$remote" | sed -E 's#(://)[^/@]*@#\1#g' | tr -d '\r\n"' )"
     cat > "$file" <<EOF
 ---
 type: project-log
@@ -234,6 +265,8 @@ cmd_context() {
   if [ -n "$epic" ]; then
     require_slug "$epic" "エピック slug"
     jf="$(journal_file "$epic")"
+    # 読み出しもコンテキストへの流し込みなので、書き込みと同じ検査を通す
+    [ -e "$jf" ] || [ -L "$jf" ] && assert_in_journal_dir "$jf"
     if [ -f "$jf" ]; then
       cat <<EOF
 ════════════════════════════════════════════════
@@ -380,6 +413,7 @@ cmd_outer() {
     # Vault に届かない端末では内部ジャーナルへ退避する。記録を落とさない。
     local jf
     jf="$(journal_file "$epic")"
+    [ -e "$jf" ] || [ -L "$jf" ] && assert_in_journal_dir "$jf"
     if [ -f "$jf" ]; then
       {
         echo
