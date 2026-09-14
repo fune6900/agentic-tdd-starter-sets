@@ -114,6 +114,92 @@ it "大文字小文字を問わない"
 assert_blocked 'psql -c "drop table users"'
 
 # ══════════════════════════════════════════════
+suite "pre-tool-guard: 別のシェルに渡す引数は除去しない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# 「展開が起きない＝シェルが実行しえない」は誤り。sh -c / ssh / eval の引数は
+# 展開が起きなくても**別のシェルがそのまま実行する**。
+# ヒアドキュメントには消費側の概念を入れたのに、クォートには入れていなかった。
+
+it "sh -c のダブルクォート引数"
+assert_blocked 'sh -c "rm -rf /tmp/build"'
+
+it "sh -c のシングルクォート引数"
+assert_blocked "sh -c 'rm -rf /tmp/build'"
+
+it "bash -c の引数"
+assert_blocked "bash -c 'rm -rf ~/work'"
+
+it "ssh の引数"
+assert_blocked 'ssh prod "rm -rf /var/www"'
+
+it "docker exec 経由の sh -c"
+assert_blocked 'docker exec c sh -c "rm -rf /data"'
+
+it "find -exec sh -c 経由"
+assert_blocked 'find . -type d -exec sh -c "rm -rf {}" \;'
+
+it "xargs sh -c 経由"
+assert_blocked "echo x | xargs -I% sh -c 'rm -rf %'"
+
+it "eval の引数"
+assert_blocked "eval 'git reset --hard'"
+
+it "eval の ANSI-C クォート引数"
+assert_blocked "eval \$'rm -rf /tmp/x'"
+
+it "sh -c 経由のディスク破壊"
+assert_blocked 'sh -c "dd if=/dev/zero of=/dev/sda"'
+
+it "sh -c 経由の mkfs"
+assert_blocked "sh -c 'mkfs.ext4 /dev/sdb1'"
+
+# ══════════════════════════════════════════════
+suite "pre-tool-guard: 分類は綴りで決まってはいけない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# 行全体の部分文字列マッチだと、DB 名に cat が含まれるだけで inert 判定になり
+# SQL の走査が空振りする。止まるかどうかが綴りで決まるのは歯止めではない。
+
+it "DB 名に cat を含んでも SQL を検知する"
+assert_blocked "$(printf 'psql -d catalog <<%sSQL%s\nDROP TABLE users;\nSQL\n' "'" "'")"
+
+it "tee にパイプしても SQL を検知する"
+assert_blocked "$(printf 'psql -f - <<%sSQL%s\nDROP TABLE users;\nSQL\n | tee migrate.log\n' "'" "'")"
+
+it "ホスト名に gh を含んでも SQL を検知する"
+assert_blocked "$(printf 'psql -h high -f - <<%sSQL%s\nTRUNCATE logs;\nSQL\n' "'" "'")"
+
+it "catalog という語だけでは誤爆しない"
+assert_allowed 'ls catalog/'
+
+# ══════════════════════════════════════════════
+suite "pre-tool-guard: シェル消費側の取りこぼし（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+
+it "空白なしのリダイレクト（sh<<EOF）"
+assert_blocked "$(printf 'sh<<%sEOF%s\nrm -rf /tmp/x\nEOF\n' "'" "'")"
+
+it "パイプ先が sh で直後がセミコロン"
+assert_blocked "$(printf 'cat <<%sEOF%s | sh;\nrm -rf /tmp/x\nEOF\n' "'" "'")"
+
+it "source /dev/stdin 経由"
+assert_blocked "$(printf 'source /dev/stdin <<%sEOF%s\nrm -rf /tmp/x\nEOF\n' "'" "'")"
+
+it "ドット読み込み経由"
+assert_blocked "$(printf '. /dev/stdin <<%sEOF%s\nrm -rf /tmp/x\nEOF\n' "'" "'")"
+
+it "eval + コマンド置換の中の cat ヒアドキュメント"
+assert_blocked "$(printf 'eval "\$(cat <<%sEOF%s\nrm -rf /tmp/x\nEOF\n)"\n' "'" "'")"
+
+# ══════════════════════════════════════════════
+suite "pre-tool-guard: 区切り文字の乗っ取り（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# 貪欲マッチで行内最後の << が採用されると、本来の終端を越えて
+# 後続のコマンドまで本文として捨てられる。
+
+it "行内の偽の << に区切り文字を乗っ取られない"
+assert_blocked "$(printf 'cat <<EOF > note.md  # see "<< END"\ntext\nEOF\ngit reset --hard HEAD~5\nEND\n')"
+
+# ══════════════════════════════════════════════
 suite "pre-tool-guard: 展開されうる文字列は従来通り検査する"
 # ══════════════════════════════════════════════
 # ダブルクォートの中でもコマンド置換・変数展開が起きうる。
@@ -259,5 +345,130 @@ for c in 'rm -rf /tmp/x' 'git push --force' 'rm file.txt' 'git push origin main'
   [ "$a" = "$b" ] || mismatch="$mismatch [$c: claude=$a codex=$b]"
 done
 assert_eq "$mismatch" ""
+
+it "Codex 版も sh -c の引数を検査する"
+assert_blocked 'sh -c "rm -rf /tmp/build"' "$CODEX_GUARD"
+
+it "Codex 版も ssh の引数を検査する"
+assert_blocked 'ssh prod "rm -rf /var/www"' "$CODEX_GUARD"
+
+it "Codex 版も DB 名の綴りに影響されない"
+assert_blocked "$(printf 'psql -d catalog <<%sSQL%s\nDROP TABLE users;\nSQL\n' "'" "'")" "$CODEX_GUARD"
+
+it "Codex 版も区切り文字を乗っ取られない"
+assert_blocked "$(printf 'cat <<EOF > note.md  # see "<< END"\ntext\nEOF\ngit reset --hard HEAD~5\nEND\n')" "$CODEX_GUARD"
+
+# ══════════════════════════════════════════════
+suite "pre-tool-guard: 巨大な入力（時間切れでフェイルオープンさせない）"
+# ══════════════════════════════════════════════
+# 走査前の取り除きは入力長に対して厳密には線形でない。
+# 無害な文字列で埋めて実行時間を引き延ばせば、フックはタイムアウトで死ぬ＝
+# 素通りする。上限を超えたら取り除きをやめ、**生のまま**走査して誤爆側に倒す。
+
+pad() { # <長さ>
+  awk -v n="$1" 'BEGIN {
+    s = "0123456789abcdef"
+    while (length(s) < n) s = s s
+    printf "%s", substr(s, 1, n)
+  }'
+}
+
+it "上限以下ならヒアドキュメント本文で誤爆しない"
+assert_allowed "$(printf 'cat > doc.md <<%sEOF%s\n%s\nrm -rf /tmp/x\nEOF\n' "'" "'" "$(pad 1024)")"
+
+it "上限を超えたら取り除きをやめてブロックする（フェイルクローズ）"
+assert_blocked "$(printf 'cat > doc.md <<%sEOF%s\n%s\nrm -rf /tmp/x\nEOF\n' "'" "'" "$(pad 70000)")"
+
+it "上限を超えても危険なパターンが無ければ通る"
+assert_allowed "$(printf 'echo %s' "$(pad 70000)")"
+
+it "巨大な入力でも所定時間内に終わる"
+huge="$(printf 'echo "%s"' "$(pad 2000000)")"
+huge_start=$(date +%s)
+guard "$huge" || true
+huge_elapsed=$(( $(date +%s) - huge_start ))
+if [ "$huge_elapsed" -le 10 ]; then
+  pass
+else
+  fail "巨大な入力でフックが遅すぎる（タイムアウト＝素通りの温床）" "経過: ${huge_elapsed}秒"
+fi
+
+# ══════════════════════════════════════════════
+suite "pre-tool-guard: 旧実装との差分（未知の退行を拾う）"
+# ══════════════════════════════════════════════
+# 「緩めた結果として何が通るようになったか」を全数で測る。
+# 意図した緩和だけが差分に現れることを確認する。
+# 個別のテストは自分が想定した形しか踏まない。想定外を拾うのはこちら。
+
+OLD_GUARD="$(mktemp)"
+if git -C "$REPO_ROOT" show main:.claude/hooks/pre-tool-guard.sh > "$OLD_GUARD" 2>/dev/null; then
+
+  # 意図した緩和（Issue #9 の本題と、security.md に明記した限界）
+  is_intended_relaxation() { # <入力>
+    case "$1" in
+      *"docs:"*|*README*|*"は禁止"*|*"注意"*)              return 0 ;;  # 文章への言及
+      *"python3 - <<"*)                                    return 0 ;;  # 別言語の本文
+      *"> run.sh"*)                                        return 0 ;;  # 二段実行（既知の限界）
+      *"prisma"*)                                          return 0 ;;  # 未知の DB クライアント
+      *"rm -fr"*|*"rm -Rf"*|*"rm -fR"*)                    return 0 ;;  # 新規に検知した側
+    esac
+    return 1
+  }
+
+  corpus_file="$(mktemp)"
+  {
+    printf '%s\n' 'rm -rf /tmp/x'
+    printf '%s\n' 'sudo rm -rf /var/log'
+    printf '%s\n' 'cd /tmp && rm -rf build'
+    printf '%s\n' 'sh -c "rm -rf /tmp/build"'
+    printf '%s\n' 'ssh prod "rm -rf /var/www"'
+    printf '%s\n' 'eval "git reset --hard"'
+    printf '%s\n' 'git push --force origin main'
+    printf '%s\n' 'git clean -fd'
+    printf '%s\n' 'chmod -R 777 /var/www'
+    printf '%s\n' 'dd if=/dev/zero of=/dev/sda'
+    printf '%s\n' 'mkfs.ext4 /dev/sda1'
+    printf '%s\n' 'echo x > /dev/sda'
+    printf '%s\n' 'psql -c "DROP TABLE users"'
+    printf '%s\n' 'psql -d catalog -c "DROP TABLE users"'
+    printf '%s\n' 'mysql -e "TRUNCATE logs"'
+    printf '%s\n' 'git push origin main'
+    printf '%s\n' 'rm file.txt'
+    printf '%s\n' 'bash tests/run.sh'
+  } > "$corpus_file"
+
+  regressions=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if guard "$c" "$OLD_GUARD"; then old=allow; else old=block; fi
+    if guard "$c" "$GUARD"; then new=allow; else new=block; fi
+    if [ "$old" = "block" ] && [ "$new" = "allow" ]; then
+      is_intended_relaxation "$c" || regressions="$regressions
+  $c"
+    fi
+  done < "$corpus_file"
+
+  it "旧実装がブロックしたものを新実装が取りこぼさない"
+  assert_eq "$regressions" ""
+
+  it "旧実装で通っていた正常なコマンドは通り続ける"
+  newblocks=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if guard "$c" "$OLD_GUARD"; then old=allow; else old=block; fi
+    if guard "$c" "$GUARD"; then new=allow; else new=block; fi
+    if [ "$old" = "allow" ] && [ "$new" = "block" ]; then
+      case "$c" in *"rm -fr"*|*"rm -Rf"*|*"rm -fR"*) ;; *) newblocks="$newblocks
+  $c" ;; esac
+    fi
+  done < "$corpus_file"
+  assert_eq "$newblocks" ""
+
+  rm -f "$corpus_file"
+else
+  it "旧実装との差分（main が取得できないためスキップ）"
+  pass
+fi
+rm -f "$OLD_GUARD"
 
 report

@@ -12,13 +12,20 @@ REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel)}"
 
 cd "$REPO_ROOT" || exit 1
 
-# 検査対象。このファイル自身と pre-tool-guard.sh は「踏んではいけない書き方」を
-# 検出パターンとして本文に含むため、必ず除外する。
+# 全てのシェルスクリプト。構文・shebang の検査はここを使う。
 shell_files() {
-  find .claude .codex tests -name '*.sh' -type f \
-    ! -name 'shell-lint.test.sh' \
-    ! -name 'pre-tool-guard.sh' \
-    ! -name 'pre-tool-guard.test.sh' | sort
+  find .claude .codex tests -name '*.sh' -type f | sort
+}
+
+# 危険な書き方の**パターン走査**の対象。
+# 自分自身と guard 本体・そのテストは「踏んではいけない書き方」を
+# 検出パターンやテストデータとして本文に含むため、ここからのみ除外する。
+# **除外は検査単位で絞る。** 一括除外すると構文検査まで素通りする。
+pattern_scan_files() {
+  shell_files \
+    | grep -v '/shell-lint\.test\.sh$' \
+    | grep -v '/pre-tool-guard\.sh$' \
+    | grep -v '/pre-tool-guard\.test\.sh$'
 }
 
 # 出荷されるスクリプト（テストコードを除く）
@@ -34,7 +41,7 @@ suite "shell-lint: 多バイト文字に隣接する変数展開"
 # 過去に loop-journal.sh と loop-state.sh の2回踏んでいる。
 
 it "裸の変数展開が多バイト文字に隣接していない"
-hits="$(shell_files | xargs perl -ne 'print "$ARGV:$.\n" if /\$[A-Za-z_]\w*[^\x00-\x7F]/' 2>/dev/null)"
+hits="$(pattern_scan_files | xargs perl -ne 'print "$ARGV:$.\n" if /\$[A-Za-z_]\w*[^\x00-\x7F]/' 2>/dev/null)"
 assert_eq "$hits" ""
 
 # ══════════════════════════════════════════════
@@ -45,7 +52,7 @@ suite "shell-lint: コマンド置換の中の die"
 # 破壊的操作の手前の判定は必ず親シェルで行うこと。
 
 it "die / exit をコマンド置換の中で呼んでいない"
-hits="$(shell_files | xargs perl -ne 'print "$ARGV:$.\n" if /\$\(\s*[^)]*\b(?:die|exit)\b/' 2>/dev/null)"
+hits="$(pattern_scan_files | xargs perl -ne 'print "$ARGV:$.\n" if /\$\(\s*[^)]*\b(?:die|exit)\b/' 2>/dev/null)"
 assert_eq "$hits" ""
 
 # ══════════════════════════════════════════════
@@ -54,7 +61,7 @@ suite "shell-lint: 破壊的操作の前提"
 
 it "スクリプトが再帰的な強制削除を使っていない"
 # このリポジトリの禁止操作。pre-tool-guard.sh は検知パターンとして保持するので対象外。
-hits="$(shell_files | xargs perl -ne 'print "$ARGV:$.\n" if /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/' 2>/dev/null)"
+hits="$(pattern_scan_files | xargs perl -ne 'print "$ARGV:$.\n" if /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/' 2>/dev/null)"
 assert_eq "$hits" ""
 
 it "出荷される全スクリプトが set -u を宣言している"
