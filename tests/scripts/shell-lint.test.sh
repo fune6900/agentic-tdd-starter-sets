@@ -17,7 +17,8 @@ cd "$REPO_ROOT" || exit 1
 shell_files() {
   find .claude .codex tests -name '*.sh' -type f \
     ! -name 'shell-lint.test.sh' \
-    ! -name 'pre-tool-guard.sh' | sort
+    ! -name 'pre-tool-guard.sh' \
+    ! -name 'pre-tool-guard.test.sh' | sort
 }
 
 # 出荷されるスクリプト（テストコードを除く）
