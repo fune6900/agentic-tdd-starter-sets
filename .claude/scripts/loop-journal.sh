@@ -126,6 +126,30 @@ assert_in_journal_dir() {
 
 # ---------- 解決 ----------
 
+# 外部由来の値を報告に載せる前に必ず通す。
+# context の出力はコンテキストに入る（CLAUDE.md が「最初の行動」と定めている）。
+# 制御文字を落として切り詰める。**関数の一部にだけ掛けるな。境界を越える全ての値に掛ける。**
+safe_display() {
+  printf '%s' "${1:-}" | tr -d '\000-\037' | cut -c1-40
+}
+
+# ポインタ類（.vault / .project / .active）を読む。**リンクは追わない。**
+#
+# journal/*.md に適用しているリンク検査と同じ脅威がここにも成立する。
+# .gitignore 済みでも `git add -f` で追跡でき、mode 120000 として clone 後に復元される。
+# ~/.git-credentials などへのリンクを1本混ぜられれば、その中身が
+# 「絶対パスではない」等の警告に載ってコンテキストへ流れ込む。
+read_pointer() { # <パス> [行番号]
+  local f="${1:-}" n="${2:-1}"
+  [ -n "$f" ] || return 1
+  if [ -L "$f" ]; then
+    echo "WARN: ポインタがシンボリックリンクだ。中身は読まない: $f" >&2
+    return 1
+  fi
+  [ -f "$f" ] && [ -s "$f" ] || return 1
+  sed -n "${n}p" "$f" | tr -d '\r'
+}
+
 # Vault ポインタの紐付けに使う「プロジェクトの同一性」。**上書きできない値を使う。**
 #
 # project_name()（下）は Vault のファイル名を決める表示名で、`.project` や
@@ -136,20 +160,69 @@ assert_in_journal_dir() {
 # git worktree では PROJECT_DIR が作業領域を指し basename がブランチ名になるため、
 # 共通の .git を辿って本体のリポジトリ名を得る。
 project_identity() {
-  local common
+  local common gitdir recorded here
+
+  here="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || here="$PROJECT_DIR"
+
   common="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-  if [ -n "$common" ] && [ "$common" != "." ]; then
-    basename "$(dirname "$common")"
+  if [ -z "$common" ] || [ "$common" = "." ]; then
+    # git 管理外。ディレクトリの実パスを同一性にする
+    printf '%s\n' "$here"
     return 0
   fi
-  basename "$PROJECT_DIR"
+
+  # worktree では .git が**ファイル**（gitdir ポインタ）であり、cp -r で付いてくる。
+  # そのままだとコピー先が元リポジトリの同一性を名乗り、照合を素通りする。
+  #
+  # git は <common>/worktrees/<name>/gitdir に「その worktree の .git があるべき場所」を
+  # 記録している。**実際の位置と食い違えば、コピーされた偽物**だ。
+  # --git-common-dir は「どのリポジトリか」には答えるが
+  # 「このディレクトリはそのリポジトリの一部か」には答えない。聞くべき質問が違う。
+  if [ -f "$PROJECT_DIR/.git" ]; then
+    gitdir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
+    if [ -n "$gitdir" ] && [ -f "$gitdir/gitdir" ]; then
+      recorded="$(cd "$(dirname "$(cat "$gitdir/gitdir")")" 2>/dev/null && pwd -P)" || recorded=""
+      if [ "$recorded" != "$here" ]; then
+        # 元リポジトリの同一性は名乗らせない。自分の実パスを同一性にする
+        printf '%s\n' "$here"
+        return 0
+      fi
+    fi
+  fi
+
+  # 共通 .git の実パスを同一性にする。リポジトリ名だけの一致では、
+  # **同名の別ディレクトリへコピーされた場合に素通りする**。
+  ( cd "$common" 2>/dev/null && pwd -P ) || printf '%s\n' "$common"
+}
+
+# 同一性（パス）を報告に出すときの見せ方。比較は完全一致のまま行う。
+identity_label() {
+  case "${1:-}" in
+    */.git) safe_display "$(basename "$(dirname "${1}")")" ;;
+    */*)    safe_display "$(basename "${1}")" ;;
+    *)      safe_display "${1:-}" ;;
+  esac
+}
+
+# 同一性（パス）から人が読める名前を作る。
+# **同一性をそのまま表示名に使わない。** 同一性はパスであり、Vault のファイル名にできない。
+repo_display_name() {
+  local id
+  id="$(project_identity)"
+  case "$id" in
+    */.git) basename "$(dirname "$id")" ;;
+    *)      basename "$id" ;;
+  esac
 }
 
 # Vault 側のファイル名になる表示名。運用の都合で上書きできる。
 project_name() {
   if [ -n "${LOOP_PROJECT_NAME:-}" ]; then echo "$LOOP_PROJECT_NAME"; return 0; fi
-  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR" | tr -d '\r'; return 0; fi
-  project_identity
+  local override
+  if override="$(read_pointer "$PROJECT_PTR" 1)" && [ -n "$override" ]; then
+    printf '%s\n' "$override"; return 0
+  fi
+  repo_display_name
 }
 
 vault_dir() {
@@ -162,7 +235,6 @@ vault_dir() {
     esac
   fi
 
-  [ -s "$VAULT_PTR" ] || return 1
 
   # ポインタは 1行目に Vault のパス、2行目にこれを作ったプロジェクト名を持つ。
   #
@@ -172,12 +244,16 @@ vault_dir() {
   # Vault はリポジトリ外＝権限設定も .gitignore も届かず、多くはクラウド同期される。
   # **名前を突き合わせて、自分のものでなければ使わない。**
   local ptr_path ptr_project current
-  ptr_path="$(sed -n '1p' "$VAULT_PTR" | tr -d '\r')"
-  ptr_project="$(sed -n '2p' "$VAULT_PTR" | tr -d '\r')"
+  ptr_path="$(read_pointer "$VAULT_PTR" 1)" || return 1
+  ptr_project="$(read_pointer "$VAULT_PTR" 2)" || ptr_project=""
 
   case "$ptr_path" in
     /*) ;;
-    *) echo "WARN: Vault のパスが絶対パスではない: '$ptr_path'（無視する）" >&2; return 1 ;;
+    *)
+      # 値は外部由来。1行目だけ生で出していたのが漏れの入口だった
+      echo "WARN: Vault のパスが絶対パスではない: '$(safe_display "$ptr_path")'（無視する）" >&2
+      return 1
+      ;;
   esac
 
   current="$(project_identity)"
@@ -192,15 +268,29 @@ MSG
     return 1
   fi
 
+  # 旧形式（2行目がプロジェクト名）は絶対パスではない。
+  # 「別プロジェクト」と報告すると、同じ名前が並んで意味が通らない。形式の違いとして扱う。
+  case "$ptr_project" in
+    /*) ;;
+    *)
+      cat >&2 <<MSG
+WARN: Vault ポインタが古い形式（プロジェクト名で紐付いている）。使わない。
+      名前だけの紐付けは、.project ごとコピーされると素通りする。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+      return 1
+      ;;
+  esac
+
   if [ "$ptr_project" != "$current" ]; then
-    # ポインタの中身は外部由来。context の出力はコンテキストに入るため、
-    # 制御文字を落として切り詰めてから載せる
-    local shown
-    shown="$(printf '%s' "$ptr_project" | tr -d '\000-\037' | cut -c1-40)"
+    local shown here_shown
+    shown="$(identity_label "$ptr_project")"
+    here_shown="$(identity_label "$current")"
     cat >&2 <<MSG
 WARN: Vault ポインタが別のプロジェクトのものだ。使わない。
       ポインタが指すプロジェクト: ${shown}
-      いま作業しているプロジェクト: ${current}
+      いま作業しているプロジェクト: ${here_shown}
       他所から .claude/ をコピーして持ち込まれた可能性が高い。
       このプロジェクトの記録を他人の Vault へ書かないため、接続を拒否する。
       このプロジェクトで使うなら繋ぎ直せ:
@@ -232,7 +322,10 @@ resolve_epic() {
     [ -n "$e" ] && { echo "$e"; return 0; }
   fi
 
-  [ -s "$ACTIVE_PTR" ] && { head -1 "$ACTIVE_PTR"; return 0; }
+  local active
+  if active="$(read_pointer "$ACTIVE_PTR" 1)" && [ -n "$active" ]; then
+    printf '%s\n' "$active"; return 0
+  fi
 
   local branch
   branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
@@ -325,10 +418,12 @@ EOF
   identity="$(project_identity)"
 
   # 別プロジェクトのポインタを黙って上書きしない。検知の機会を捨てる必要はない。
-  if [ -s "$VAULT_PTR" ]; then
+  if [ -e "$VAULT_PTR" ] || [ -L "$VAULT_PTR" ]; then
     local prev
-    prev="$(sed -n '2p' "$VAULT_PTR" | tr -d '\r' | tr -d '\000-\037' | cut -c1-40)"
-    if [ -n "$prev" ] && [ "$prev" != "$identity" ]; then
+    local prev_raw
+    prev_raw="$(read_pointer "$VAULT_PTR" 2 || true)"
+    prev="$(identity_label "$prev_raw")"
+    if [ -n "$prev_raw" ] && [ "$prev_raw" != "$identity" ]; then
       echo "注記: 既存の Vault ポインタは別プロジェクト（${prev}）のものだった。置き換える。"
     fi
   fi
@@ -620,7 +715,7 @@ cmd_where() {
   vf="$(vault_file)" || vf="(未接続)"
   epic="$(resolve_epic)" || epic="(未特定)"
   cat <<EOF
-プロジェクト名 : $(project_name)
+プロジェクト名 : $(safe_display "$(project_name)")
 Vault ルート   : $v
 Vault ファイル : $vf
 内部ジャーナル : $JOURNAL_DIR

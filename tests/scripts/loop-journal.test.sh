@@ -418,6 +418,127 @@ run env LOOP_VAULT_DIR="$SANDBOX_VAULT" \
 assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
 
 # ══════════════════════════════════════════════
+suite "loop-journal: ポインタ自身もリンクを追わない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# journal/*.md に掛けたリンク検査と同じ脅威が .vault / .project / .active にも成立する。
+# .gitignore 済みでも git add -f で追跡でき、mode 120000 として clone 後に復元される。
+
+new_sandbox
+printf 'https://alice:ghp_FAKETOKEN123@example.com\n' > "$SANDBOX_ROOT/creds"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.vault"
+
+it ".vault がリンクなら中身を読まない"
+run journal where
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+
+it "リンクを検出したことを報告する"
+run journal where
+assert_contains "$LAST_OUTPUT" "シンボリックリンク"
+
+rm -f "$SANDBOX_JOURNAL/.vault"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.project"
+
+it ".project がリンクなら中身を読まない"
+run journal where
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+
+rm -f "$SANDBOX_JOURNAL/.project"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.active"
+
+it ".active がリンクなら中身を読まない"
+run journal status
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+rm -f "$SANDBOX_JOURNAL/.active"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: ポインタの中身を報告に載せない"
+# ══════════════════════════════════════════════
+# 2行目だけサニタイズして1行目を素通りさせていた。境界を越える全ての値に同じ処理を通す。
+
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf 'relative\033[31m%s\nx\n' "$(python3 -c 'print("Y"*200)')" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+
+it "1行目の制御文字を落とす"
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "ESC がそのまま出力された" ;;
+  *) pass ;;
+esac
+
+it "1行目を切り詰める"
+longest="$(printf '%s' "$LAST_OUTPUT" | grep -o 'Y*' | awk '{print length}' | sort -rn | head -1)"
+if [ "${longest:-0}" -le 40 ]; then pass; else fail "Y が ${longest} 文字通過した"; fi
+
+# ══════════════════════════════════════════════
+suite "loop-journal: worktree ごとコピーされても抜けられない"
+# ══════════════════════════════════════════════
+# worktree の .git は**ファイル**（gitdir ポインタ）で cp -r で付いてくる。
+# --git-common-dir は「どのリポジトリか」には答えるが
+# 「このディレクトリはそのリポジトリの一部か」には答えない。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+git -C "$SANDBOX_PROJ" worktree add -q "$SANDBOX_ROOT/wt" -b feat/wt-x 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/wt/.claude"
+cp -r "$SANDBOX_PROJ/.claude/scripts" "$SANDBOX_PROJ/.claude/memory" "$SANDBOX_ROOT/wt/.claude/"
+wt_journal() { CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/wt" \
+  bash "$SANDBOX_ROOT/wt/.claude/scripts/loop-journal.sh" "$@"; }
+
+it "正規の worktree からは接続できる"
+run wt_journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+cp -r "$SANDBOX_ROOT/wt" "$SANDBOX_ROOT/stolen"
+stolen_journal() { CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/stolen" \
+  bash "$SANDBOX_ROOT/stolen/.claude/scripts/loop-journal.sh" "$@"; }
+
+it "worktree ごとコピーされた先からは接続できない"
+run stolen_journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "コピー先の記録が元の Vault に混入しない"
+stolen_journal start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | stolen_journal outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 同名の別ディレクトリでも抜けられない"
+# ══════════════════════════════════════════════
+# リポジトリ名だけの一致で紐付けると、同名の場所へコピーされた時点で素通りする。
+# 同一性には共通 .git の実パスを使う。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+mkdir -p "$SANDBOX_ROOT/elsewhere/proj"
+cp -r "$SANDBOX_PROJ/.claude" "$SANDBOX_ROOT/elsewhere/proj/"
+
+it "同名のディレクトリへコピーしても接続できない"
+run env CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/elsewhere/proj" \
+  bash "$SANDBOX_ROOT/elsewhere/proj/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "古い形式のポインタは形式の違いとして報告する"
+# 名前で紐付いた旧ポインタを「別プロジェクト」と言うと、同じ名前が並んで意味が通らない
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf '%s\nproj\n' "$SANDBOX_VAULT" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+assert_contains "$LAST_OUTPUT" "古い形式"
+
+# ══════════════════════════════════════════════
 suite "loop-journal: worktree でも同じプロジェクトとして扱う"
 # ══════════════════════════════════════════════
 # PROJECT_DIR の basename をそのまま使うと、worktree ではブランチ名になり、
