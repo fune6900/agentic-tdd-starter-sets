@@ -126,23 +126,257 @@ assert_in_journal_dir() {
 
 # ---------- 解決 ----------
 
+# 外部由来の値を報告に載せる前に必ず通す。
+# context の出力はコンテキストに入る（CLAUDE.md が「最初の行動」と定めている）。
+# 制御文字を落として切り詰める。**関数の一部にだけ掛けるな。境界を越える全ての値に掛ける。**
+safe_display() {
+  # C0 と DEL はバイト単位で落とせる。C1 と Unicode の双方向制御文字は
+  # マルチバイトなので、先頭バイトで固定してから3バイト目の範囲で消す
+  # （LC_ALL=C でバイトとして扱う。他の文字を壊さない）。
+  # 双方向制御を残すと、警告の左右が視覚的に反転して人間に逆に読ませられる。
+  #
+  # 切り詰めは cut -c ではなくバイト数で行う。LC_ALL=C の環境では
+  # cut -c がマルチバイトを途中で割り、不正なバイト列を出力する。
+  printf '%s' "${1:-}" \
+    | LC_ALL=C tr -d '\000-\037\177' \
+    | LC_ALL=C sed -e $'s/\302[\200-\237]//g' \
+                   -e $'s/\342\200[\216\217\252-\256]//g' \
+                   -e $'s/\342\201[\246-\251]//g' \
+    | LC_ALL=C cut -b1-120 \
+    | LC_ALL=C sed -e $'s/[\302-\364][\200-\277]*$//'
+}
+
+# ポインタ類（.vault / .project / .active）を読む。**リンクは追わない。**
+#
+# journal/*.md に適用しているリンク検査と同じ脅威がここにも成立する。
+# .gitignore 済みでも `git add -f` で追跡でき、mode 120000 として clone 後に復元される。
+# ~/.git-credentials などへのリンクを1本混ぜられれば、その中身が
+# 「絶対パスではない」等の警告に載ってコンテキストへ流れ込む。
+read_pointer() { # <パス> [行番号]
+  local f="${1:-}" n="${2:-1}"
+  [ -n "$f" ] || return 1
+  if [ -L "$f" ]; then
+    echo "WARN: ポインタがシンボリックリンクだ。中身は読まない: $f" >&2
+    return 1
+  fi
+  [ -f "$f" ] && [ -s "$f" ] || return 1
+
+  local line
+  line="$(sed -n "${n}p" "$f" 2>/dev/null | tr -d '\r')"
+
+  # 制御文字を含む値は採用しない。**ここで弾けば、ポインタ由来の値は
+  # 以降どこへ流れても安全になる。** 表示のたびに消して回るのは取りこぼす。
+  case "$line" in
+    *[[:cntrl:]]*)
+      echo "WARN: ポインタに制御文字が含まれている。採用しない: $f" >&2
+      return 1
+      ;;
+  esac
+
+  printf '%s\n' "$line"
+}
+
+# ポインタへの**書き込み**。読みと対にする。
+#
+# read_pointer だけではリンクを追う書き込みが残る。実際、cmd_init は
+# リンクを検知して警告を出した直後に、そのリンクを通して書いていた。
+# `>` の直書きをこの関数の外に残さない。
+write_pointer() { # <パス> <内容...>
+  local f="${1:-}"; shift
+  [ -n "$f" ] || { echo "ERROR: write_pointer: パスが空だ。" >&2; return 1; }
+
+  if [ -L "$f" ]; then
+    echo "ERROR: ポインタがシンボリックリンクだ。リンク先には書かない: $f" >&2
+    echo "       リンクを消してから繋ぎ直せ。" >&2
+    return 1
+  fi
+
+  local d jd
+  d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: ポインタの置き場所を解決できない: $f" >&2; return 1; }
+  jd="$(cd "$JOURNAL_DIR" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: ジャーナルディレクトリを解決できない: $JOURNAL_DIR" >&2; return 1; }
+  [ "$d" = "$jd" ] || {
+    echo "ERROR: ジャーナル外へ書き込もうとした: $f" >&2; return 1; }
+
+  printf '%s\n' "$@" > "$f"
+}
+
+# Vault ポインタの紐付けに使う「プロジェクトの同一性」。**上書きできない値を使う。**
+#
+# project_name()（下）は Vault のファイル名を決める表示名で、`.project` や
+# LOOP_PROJECT_NAME で上書きできる。上書き可能な値で紐付けると、
+# **`.project` ごとコピーされた時点で照合が無意味になる**（実際に回避を再現した）。
+# こちらは git から導くので、.claude/ をコピーしても付いてこない。
+#
+# git worktree では PROJECT_DIR が作業領域を指し basename がブランチ名になるため、
+# 共通の .git を辿って本体のリポジトリ名を得る。
+project_identity() {
+  local common gitdir recorded here
+
+  here="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || here="$PROJECT_DIR"
+
+  common="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -z "$common" ] || [ "$common" = "." ]; then
+    # git 管理外。ディレクトリの実パスを同一性にする
+    printf '%s\n' "$here"
+    return 0
+  fi
+
+  # --git-common-dir は「どのリポジトリか」には答えるが
+  # 「このディレクトリはそのリポジトリの一部か」には答えない。聞くべき質問が違う。
+  #
+  # **確認できない形では、共通 .git の同一性を名乗らせない。**
+  # 「検査対象が見つからなければ検査しない」はフェイルオープンで、
+  # 細工した .git ファイル（gitdir: /被害者/repo/.git）1本で素通りできた。
+  local common_real
+  common_real="$(cd "$common" 2>/dev/null && pwd -P)" || common_real=""
+  if [ -z "$common_real" ]; then
+    printf '%s\n' "$here"
+    return 0
+  fi
+
+  if [ -d "$PROJECT_DIR/.git" ]; then
+    # 通常のリポジトリ: 自分の .git が共通 .git そのものであることを要求する
+    local own
+    own="$(cd "$PROJECT_DIR/.git" 2>/dev/null && pwd -P)" || own=""
+    if [ -n "$own" ] && [ "$own" = "$common_real" ]; then
+      printf '%s\n' "$common_real"
+      return 0
+    fi
+    printf '%s\n' "$here"
+    return 0
+  fi
+
+  if [ -f "$PROJECT_DIR/.git" ]; then
+    # worktree: git が <common>/worktrees/<name>/gitdir に記録した
+    # 「あるべき場所」と実際の位置の一致を**必須**にする。
+    # 記録が無い形（手書きの .git ファイル）は偽物として扱う。
+    gitdir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
+    if [ -n "$gitdir" ] && [ -f "$gitdir/gitdir" ]; then
+      recorded="$(cd "$(dirname -- "$(cat "$gitdir/gitdir")")" 2>/dev/null && pwd -P)" || recorded=""
+      if [ -n "$recorded" ] && [ "$recorded" = "$here" ]; then
+        printf '%s\n' "$common_real"
+        return 0
+      fi
+    fi
+    printf '%s\n' "$here"
+    return 0
+  fi
+
+  # .git がディレクトリでもファイルでもない（サブディレクトリからの実行など）。
+  # 共通 .git の実パスが自分を含んでいるかで判断する。
+  case "$here/" in
+    "$(dirname -- "$common_real")"/*) printf '%s\n' "$common_real" ;;
+    *) printf '%s\n' "$here" ;;
+  esac
+}
+
+# 同一性（パス）を報告に出すときの見せ方。比較は完全一致のまま行う。
+identity_label() {
+  case "${1:-}" in
+    */.git) safe_display "$(basename -- "$(dirname -- "${1}")")" ;;
+    */*)    safe_display "$(basename -- "${1}")" ;;
+    *)      safe_display "${1:-}" ;;
+  esac
+}
+
+# 同一性（パス）から人が読める名前を作る。
+# **同一性をそのまま表示名に使わない。** 同一性はパスであり、Vault のファイル名にできない。
+repo_display_name() {
+  local id
+  id="$(project_identity)"
+  case "$id" in
+    */.git) basename -- "$(dirname -- "$id")" ;;
+    *)      basename -- "$id" ;;
+  esac
+}
+
+# Vault 側のファイル名になる表示名。運用の都合で上書きできる。
 project_name() {
   if [ -n "${LOOP_PROJECT_NAME:-}" ]; then echo "$LOOP_PROJECT_NAME"; return 0; fi
-  if [ -s "$PROJECT_PTR" ]; then head -1 "$PROJECT_PTR"; return 0; fi
-  basename "$PROJECT_DIR"
+  local override
+  if override="$(read_pointer "$PROJECT_PTR" 1)" && [ -n "$override" ]; then
+    printf '%s\n' "$override"; return 0
+  fi
+  repo_display_name
 }
 
 vault_dir() {
+  # 環境変数が最優先。明示的に指定された以上、持ち主の意図として扱う。
   local v="${LOOP_VAULT_DIR:-}"
-  # .vault はコミット対象外だが、既にコミットされていれば checkout で持ち込める。
-  # 全パスの基底になる値なので、絶対パスであることと改行が無いことを確かめる。
-  if [ -z "$v" ] && [ -s "$VAULT_PTR" ]; then v="$(head -1 "$VAULT_PTR" | tr -d '\r')"; fi
-  [ -n "$v" ] || return 1
-  case "$v" in
+  if [ -n "$v" ]; then
+    case "$v" in
+      /*) echo "$v"; return 0 ;;
+      *) echo "WARN: LOOP_VAULT_DIR が絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+    esac
+  fi
+
+
+  # ポインタは 1行目に Vault のパス、2行目にこれを作ったプロジェクト名を持つ。
+  #
+  # このファイルは .gitignore 済みだが、**作業ツリーごと cp でコピーすると付いてくる**。
+  # 「手元のチェックアウトから .claude/ を直接コピーして別プロジェクトに導入する」は
+  # 現実によくやる手順で、そのとき別プロジェクトの記録が元の持ち主の Vault へ流れ込む。
+  # Vault はリポジトリ外＝権限設定も .gitignore も届かず、多くはクラウド同期される。
+  # **名前を突き合わせて、自分のものでなければ使わない。**
+  local ptr_path ptr_project current
+  ptr_path="$(read_pointer "$VAULT_PTR" 1)" || return 1
+  ptr_project="$(read_pointer "$VAULT_PTR" 2)" || ptr_project=""
+
+  case "$ptr_path" in
     /*) ;;
-    *) echo "WARN: Vault のパスが絶対パスではない: '$v'（無視する）" >&2; return 1 ;;
+    *)
+      # 値は外部由来。1行目だけ生で出していたのが漏れの入口だった
+      echo "WARN: Vault のパスが絶対パスではない: '$(safe_display "$ptr_path")'（無視する）" >&2
+      return 1
+      ;;
   esac
-  echo "$v"
+
+  current="$(project_identity)"
+
+  if [ -z "$ptr_project" ]; then
+    cat >&2 <<MSG
+WARN: Vault ポインタにプロジェクト名が無い（古い形式、または他所からコピーされた）。
+      どのプロジェクト用に作られたポインタか確認できないため使わない。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+    return 1
+  fi
+
+  # 旧形式（2行目がプロジェクト名）は絶対パスではない。
+  # 「別プロジェクト」と報告すると、同じ名前が並んで意味が通らない。形式の違いとして扱う。
+  case "$ptr_project" in
+    /*) ;;
+    *)
+      cat >&2 <<MSG
+WARN: Vault ポインタが古い形式（プロジェクト名で紐付いている）。使わない。
+      名前だけの紐付けは、.project ごとコピーされると素通りする。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+      return 1
+      ;;
+  esac
+
+  if [ "$ptr_project" != "$current" ]; then
+    local shown here_shown
+    shown="$(identity_label "$ptr_project")"
+    here_shown="$(identity_label "$current")"
+    cat >&2 <<MSG
+WARN: Vault ポインタが別のプロジェクトのものだ。使わない。
+      ポインタが指すプロジェクト: ${shown}
+      いま作業しているプロジェクト: ${here_shown}
+      他所から .claude/ をコピーして持ち込まれた可能性が高い。
+      このプロジェクトの記録を他人の Vault へ書かないため、接続を拒否する。
+      このプロジェクトで使うなら繋ぎ直せ:
+        bash .claude/scripts/loop-journal.sh init <vault-path>
+MSG
+    return 1
+  fi
+
+  echo "$ptr_path"
 }
 
 vault_file() {
@@ -165,7 +399,10 @@ resolve_epic() {
     [ -n "$e" ] && { echo "$e"; return 0; }
   fi
 
-  [ -s "$ACTIVE_PTR" ] && { head -1 "$ACTIVE_PTR"; return 0; }
+  local active
+  if active="$(read_pointer "$ACTIVE_PTR" 1)" && [ -n "$active" ]; then
+    printf '%s\n' "$active"; return 0
+  fi
 
   local branch
   branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
@@ -251,7 +488,24 @@ EOF
     echo "既存のプロジェクトファイルを再利用する: $file"
   fi
 
-  printf '%s\n' "$vault" > "$VAULT_PTR"
+  # 1行目: Vault のパス / 2行目: このポインタを作ったプロジェクトの**同一性**。
+  # 表示名（${name}）ではなく project_identity を書く。表示名は .project で上書きでき、
+  # そのファイルもコピーで付いてくるため、紐付けの根拠にならない。
+  local identity
+  identity="$(project_identity)"
+
+  # 別プロジェクトのポインタを黙って上書きしない。検知の機会を捨てる必要はない。
+  if [ -e "$VAULT_PTR" ] || [ -L "$VAULT_PTR" ]; then
+    local prev
+    local prev_raw
+    prev_raw="$(read_pointer "$VAULT_PTR" 2 || true)"
+    prev="$(identity_label "$prev_raw")"
+    if [ -n "$prev_raw" ] && [ "$prev_raw" != "$identity" ]; then
+      echo "注記: 既存の Vault ポインタは別プロジェクト（${prev}）のものだった。置き換える。"
+    fi
+  fi
+
+  write_pointer "$VAULT_PTR" "$vault" "$identity" || exit 1
   echo "Vault を接続した: $vault"
   echo "（接続情報は $VAULT_PTR に保存した。端末ごとの設定なので Git には乗せない）"
 }
@@ -353,7 +607,7 @@ EOF
     echo "既存の内部ジャーナルを再利用する: $jf"
   fi
 
-  printf '%s\n' "$epic" > "$ACTIVE_PTR"
+  write_pointer "$ACTIVE_PTR" "$epic" || exit 1
   echo "進行中エピック: $epic"
 }
 
@@ -517,7 +771,7 @@ cmd_flush() {
 
   assert_in_journal_dir "$jf"
   rm -f "$jf"
-  if [ -s "$ACTIVE_PTR" ] && [ "$(head -1 "$ACTIVE_PTR")" = "$epic" ]; then
+  if [ "$(read_pointer "$ACTIVE_PTR" 1 2>/dev/null)" = "$epic" ]; then
     rm -f "$ACTIVE_PTR"
   fi
 
@@ -534,15 +788,28 @@ EOF
 
 cmd_where() {
   local v vf epic
-  v="$(vault_dir)" || v="(未接続)"
-  vf="$(vault_file)" || vf="(未接続)"
-  epic="$(resolve_epic)" || epic="(未特定)"
+  # vault_dir は警告を出しうる。2回呼ぶと警告も2回出る（注入文字列も2倍になる）
+  if v="$(vault_dir)"; then
+    vf="$v/projects/$(project_name).md"
+  else
+    v="(未接続)"; vf="(未接続)"
+  fi
+
+  # 表示する値は全て安全側を通す。**1行だけ通して他を素通りさせない。**
+  if epic="$(resolve_epic)" && valid_slug "$epic"; then
+    :
+  elif [ -n "${epic:-}" ]; then
+    epic="(不正な値)"
+  else
+    epic="(未特定)"
+  fi
+
   cat <<EOF
-プロジェクト名 : $(project_name)
-Vault ルート   : $v
-Vault ファイル : $vf
+プロジェクト名 : $(safe_display "$(project_name)")
+Vault ルート   : $(safe_display "$v")
+Vault ファイル : $(safe_display "$vf")
 内部ジャーナル : $JOURNAL_DIR
-進行中エピック : $epic
+進行中エピック : $(safe_display "$epic")
 EOF
 }
 

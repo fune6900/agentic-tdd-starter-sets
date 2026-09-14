@@ -318,6 +318,352 @@ run journal where
 assert_contains "$LAST_OUTPUT" "(未接続)"
 
 # ══════════════════════════════════════════════
+suite "loop-journal: 他プロジェクトから持ち込まれた Vault ポインタを拒む"
+# ══════════════════════════════════════════════
+# .vault は .gitignore 済みだが、作業ツリーごと cp でコピーすると付いてくる。
+# 「手元のチェックアウトから .claude/ を直接コピーする」は現実によくやる手順で、
+# そのとき別プロジェクトの記録が元の持ち主の Vault へ流れ込む。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+
+it "init はポインタにプロジェクト名を書く"
+assert_file_contains "$SANDBOX_JOURNAL/.vault" "proj"
+
+it "ポインタの1行目は Vault のパスのまま"
+assert_eq "$(sed -n '1p' "$SANDBOX_JOURNAL/.vault")" "$SANDBOX_VAULT"
+
+# 実際に別リポジトリへ .claude/ を丸ごとコピーして再現する。
+# 環境変数で名前を変えるだけの擬似再現では、上書き可能な値を使った紐付けの
+# 弱さ（.project ごとコピーされると照合が無意味になる）を検出できない。
+copied="$SANDBOX_ROOT/copied-project"
+mkdir -p "$copied"
+cp -r "$SANDBOX_PROJ/.claude" "$copied/"
+( cd "$copied" && git init -q ) 2>/dev/null
+copied_journal() {
+  CLAUDE_PROJECT_DIR="$copied" bash "$copied/.claude/scripts/loop-journal.sh" "$@"
+}
+
+it "コピー先ではポインタが引き継がれている"
+assert_file "$copied/.claude/memory/journal/.vault"
+
+it "別プロジェクトのポインタは使わない"
+run copied_journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "拒否した理由を報告する"
+run copied_journal where
+assert_contains "$LAST_OUTPUT" "別のプロジェクトのものだ"
+
+it "別プロジェクトの記録が元の Vault に作られない"
+copied_journal start borrowed >/dev/null 2>&1
+printf -- '- x\n' | copied_journal outer plan >/dev/null 2>&1
+assert_no_file "$SANDBOX_VAULT/projects/copied-project.md"
+
+it "元の Vault ファイルにも書き込まれていない"
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "borrowed"
+
+it "元のプロジェクトからは今まで通り使える"
+run journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+# ── 紐付けは上書き可能な値であってはならない ──
+# .project も LOOP_PROJECT_NAME も Vault のファイル名を決める上書き手段で、
+# .project は .vault と同じ経路でコピーされる。これで照合を抜けられては意味が無い。
+
+it ".project を一緒にコピーされても照合を抜けられない"
+printf '%s\n' "proj" > "$SANDBOX_PROJ/.claude/memory/journal/.project"
+cp "$SANDBOX_PROJ/.claude/memory/journal/.project" "$copied/.claude/memory/journal/.project"
+run copied_journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it ".project 経由でも元の Vault に書き込めない"
+copied_journal start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | copied_journal outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+it "LOOP_PROJECT_NAME で名乗り直しても抜けられない"
+run env LOOP_PROJECT_NAME=proj CLAUDE_PROJECT_DIR="$copied" \
+  bash "$copied/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "表示名の上書きは Vault のファイル名には効く（本来の用途）"
+run journal where
+assert_contains "$LAST_OUTPUT" "projects/proj.md"
+
+it "ポインタの中身は制御文字を落としてから表示する"
+printf '%s\n\033[31minjected\n' "$SANDBOX_VAULT" > "$copied/.claude/memory/journal/.vault"
+run copied_journal where
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "制御文字がそのまま出力された" ;;
+  *) pass ;;
+esac
+
+it "プロジェクト名の無い古い形式のポインタも使わない"
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf '%s\n' "$SANDBOX_VAULT" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "古い形式でも繋ぎ直せば使える"
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+run journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+it "LOOP_VAULT_DIR は明示指定なので常に優先される"
+new_sandbox
+run env LOOP_VAULT_DIR="$SANDBOX_VAULT" \
+  bash "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: ポインタ自身もリンクを追わない（G5 の回帰テスト）"
+# ══════════════════════════════════════════════
+# journal/*.md に掛けたリンク検査と同じ脅威が .vault / .project / .active にも成立する。
+# .gitignore 済みでも git add -f で追跡でき、mode 120000 として clone 後に復元される。
+
+new_sandbox
+printf 'https://alice:ghp_FAKETOKEN123@example.com\n' > "$SANDBOX_ROOT/creds"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.vault"
+
+it ".vault がリンクなら中身を読まない"
+run journal where
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+
+it "リンクを検出したことを報告する"
+run journal where
+assert_contains "$LAST_OUTPUT" "シンボリックリンク"
+
+rm -f "$SANDBOX_JOURNAL/.vault"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.project"
+
+it ".project がリンクなら中身を読まない"
+run journal where
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+
+rm -f "$SANDBOX_JOURNAL/.project"
+ln -s "$SANDBOX_ROOT/creds" "$SANDBOX_JOURNAL/.active"
+
+it ".active がリンクなら中身を読まない"
+run journal status
+case "$LAST_OUTPUT" in
+  *ghp_FAKETOKEN123*) fail "リンク先の秘密が出力された" ;;
+  *) pass ;;
+esac
+rm -f "$SANDBOX_JOURNAL/.active"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: リンクされたポインタへ書き込まない（G5 再判定の回帰テスト）"
+# ══════════════════════════════════════════════
+# read_pointer は読みしか守っていなかった。書き込みは生のリダイレクトで
+# リンクを追い、cmd_init はリンクを検知して警告を出した直後に書いていた。
+# .active は追跡可能な通常ファイルとして PR で配送でき、.gitignore は効かない。
+
+new_sandbox
+printf 'export AWS_PROFILE=prod\nsource ~/work/env.sh\n' > "$SANDBOX_ROOT/victim-rc"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/victim-rc" "$SANDBOX_JOURNAL/.active"
+
+it "リンクされた .active へ書き込まない"
+journal start my-epic >/dev/null 2>&1
+assert_file_contains "$SANDBOX_ROOT/victim-rc" "export AWS_PROFILE=prod"
+
+it "リンク先が切り詰められていない"
+assert_eq "$(wc -l < "$SANDBOX_ROOT/victim-rc" | tr -d ' ')" "2"
+
+it "書き込みを拒否した理由を報告する"
+rm -f "$SANDBOX_JOURNAL/.active"
+ln -s "$SANDBOX_ROOT/victim-rc" "$SANDBOX_JOURNAL/.active"
+run journal start other-epic
+assert_contains "$LAST_OUTPUT" "リンク先には書かない"
+rm -f "$SANDBOX_JOURNAL/.active"
+
+new_sandbox
+printf 'original\n' > "$SANDBOX_ROOT/victim2"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/victim2" "$SANDBOX_JOURNAL/.vault"
+
+it "リンクされた .vault へ init が書き込まない"
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+assert_file_contains "$SANDBOX_ROOT/victim2" "original"
+
+it "ジャーナル外へのポインタ書き込みを拒否する"
+rm -f "$SANDBOX_JOURNAL/.vault"
+assert_fails bash -c "
+  . '$REPO_ROOT/tests/scripts/lib.sh' 2>/dev/null
+  JOURNAL_DIR='$SANDBOX_JOURNAL'
+  . /dev/stdin <<'FN'
+$(sed -n '/^write_pointer()/,/^}/p' "$REPO_ROOT/.claude/scripts/loop-journal.sh")
+FN
+  write_pointer '$SANDBOX_ROOT/outside.txt' x
+"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 制御文字を含むポインタは採用しない"
+# ══════════════════════════════════════════════
+# .active は通常ファイルなのでリンク検査では止まらない。
+# /loop-status は常用コマンドで、出力はそのままコンテキストに入る。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+printf 'evil\033[31mINJECTED\n' > "$SANDBOX_JOURNAL/.active"
+run journal where
+
+it "ANSI エスケープが出力に残らない"
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "ESC が出力された" ;;
+  *) pass ;;
+esac
+
+it "制御文字を含む値を採用しない"
+case "$LAST_OUTPUT" in
+  *INJECTED*) fail "注入された値が採用された" ;;
+  *) pass ;;
+esac
+
+it "双方向制御文字を落とす"
+rm -f "$SANDBOX_JOURNAL/.active"
+printf '%s\n' "$(printf 'A\342\200\256B')" > "$SANDBOX_JOURNAL/.project"
+run journal where
+case "$LAST_OUTPUT" in
+  *$'\342\200\256'*) fail "RLO が出力された" ;;
+  *) pass ;;
+esac
+rm -f "$SANDBOX_JOURNAL/.project"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 細工した .git で同一性を偽装できない"
+# ══════════════════════════════════════════════
+# 「検査対象が見つからなければ検査しない」はフェイルオープンだった。
+# gitdir: /被害者/repo/.git と書いた .git ファイル1本で素通りできた。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/fake"
+cp -r "$SANDBOX_PROJ/.claude" "$SANDBOX_ROOT/fake/"
+printf 'gitdir: %s/.git\n' "$SANDBOX_PROJ" > "$SANDBOX_ROOT/fake/.git"
+
+it "手書きの .git ファイルでは接続できない"
+run env CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "偽装からの記録が元の Vault に混入しない"
+CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: ポインタの中身を報告に載せない"
+# ══════════════════════════════════════════════
+# 2行目だけサニタイズして1行目を素通りさせていた。境界を越える全ての値に同じ処理を通す。
+
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf 'relative\033[31m%s\nx\n' "$(python3 -c 'print("Y"*200)')" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+
+it "1行目の制御文字を落とす"
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "ESC がそのまま出力された" ;;
+  *) pass ;;
+esac
+
+it "1行目を切り詰める"
+longest="$(printf '%s' "$LAST_OUTPUT" | grep -o 'Y*' | awk '{print length}' | sort -rn | head -1)"
+if [ "${longest:-0}" -le 40 ]; then pass; else fail "Y が ${longest} 文字通過した"; fi
+
+# ══════════════════════════════════════════════
+suite "loop-journal: worktree ごとコピーされても抜けられない"
+# ══════════════════════════════════════════════
+# worktree の .git は**ファイル**（gitdir ポインタ）で cp -r で付いてくる。
+# --git-common-dir は「どのリポジトリか」には答えるが
+# 「このディレクトリはそのリポジトリの一部か」には答えない。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+git -C "$SANDBOX_PROJ" worktree add -q "$SANDBOX_ROOT/wt" -b feat/wt-x 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/wt/.claude"
+cp -r "$SANDBOX_PROJ/.claude/scripts" "$SANDBOX_PROJ/.claude/memory" "$SANDBOX_ROOT/wt/.claude/"
+wt_journal() { CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/wt" \
+  bash "$SANDBOX_ROOT/wt/.claude/scripts/loop-journal.sh" "$@"; }
+
+it "正規の worktree からは接続できる"
+run wt_journal where
+assert_contains "$LAST_OUTPUT" "$SANDBOX_VAULT"
+
+cp -r "$SANDBOX_ROOT/wt" "$SANDBOX_ROOT/stolen"
+stolen_journal() { CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/stolen" \
+  bash "$SANDBOX_ROOT/stolen/.claude/scripts/loop-journal.sh" "$@"; }
+
+it "worktree ごとコピーされた先からは接続できない"
+run stolen_journal where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "コピー先の記録が元の Vault に混入しない"
+stolen_journal start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | stolen_journal outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 同名の別ディレクトリでも抜けられない"
+# ══════════════════════════════════════════════
+# リポジトリ名だけの一致で紐付けると、同名の場所へコピーされた時点で素通りする。
+# 同一性には共通 .git の実パスを使う。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+mkdir -p "$SANDBOX_ROOT/elsewhere/proj"
+cp -r "$SANDBOX_PROJ/.claude" "$SANDBOX_ROOT/elsewhere/proj/"
+
+it "同名のディレクトリへコピーしても接続できない"
+run env CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/elsewhere/proj" \
+  bash "$SANDBOX_ROOT/elsewhere/proj/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "古い形式のポインタは形式の違いとして報告する"
+# 名前で紐付いた旧ポインタを「別プロジェクト」と言うと、同じ名前が並んで意味が通らない
+new_sandbox
+mkdir -p "$SANDBOX_JOURNAL"
+printf '%s\nproj\n' "$SANDBOX_VAULT" > "$SANDBOX_JOURNAL/.vault"
+run journal where
+assert_contains "$LAST_OUTPUT" "古い形式"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: worktree でも同じプロジェクトとして扱う"
+# ══════════════════════════════════════════════
+# PROJECT_DIR の basename をそのまま使うと、worktree ではブランチ名になり、
+# Vault の記録がブランチごとに散る。共通の .git を辿って本体名を得る。
+
+new_sandbox
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+git -C "$SANDBOX_PROJ" worktree add -q "$SANDBOX_ROOT/wt-feat-99" -b feat/99-x 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/wt-feat-99/.claude/scripts"
+cp "$SANDBOX_PROJ/.claude/scripts/loop-journal.sh" "$SANDBOX_ROOT/wt-feat-99/.claude/scripts/"
+
+it "worktree でも本体と同じプロジェクト名になる"
+main_name="$(journal where | sed -n 's/^プロジェクト名 *: *//p')"
+wt_name="$(CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/wt-feat-99" \
+  bash "$SANDBOX_ROOT/wt-feat-99/.claude/scripts/loop-journal.sh" where \
+  | sed -n 's/^プロジェクト名 *: *//p')"
+assert_eq "$wt_name" "$main_name"
+
+# ══════════════════════════════════════════════
 suite "loop-journal: ブランチ名からの slug 導出"
 # ══════════════════════════════════════════════
 
