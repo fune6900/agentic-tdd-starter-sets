@@ -130,7 +130,20 @@ assert_in_journal_dir() {
 # context の出力はコンテキストに入る（CLAUDE.md が「最初の行動」と定めている）。
 # 制御文字を落として切り詰める。**関数の一部にだけ掛けるな。境界を越える全ての値に掛ける。**
 safe_display() {
-  printf '%s' "${1:-}" | tr -d '\000-\037' | cut -c1-40
+  # C0 と DEL はバイト単位で落とせる。C1 と Unicode の双方向制御文字は
+  # マルチバイトなので、先頭バイトで固定してから3バイト目の範囲で消す
+  # （LC_ALL=C でバイトとして扱う。他の文字を壊さない）。
+  # 双方向制御を残すと、警告の左右が視覚的に反転して人間に逆に読ませられる。
+  #
+  # 切り詰めは cut -c ではなくバイト数で行う。LC_ALL=C の環境では
+  # cut -c がマルチバイトを途中で割り、不正なバイト列を出力する。
+  printf '%s' "${1:-}" \
+    | LC_ALL=C tr -d '\000-\037\177' \
+    | LC_ALL=C sed -e $'s/\302[\200-\237]//g' \
+                   -e $'s/\342\200[\216\217\252-\256]//g' \
+                   -e $'s/\342\201[\246-\251]//g' \
+    | LC_ALL=C cut -b1-120 \
+    | LC_ALL=C sed -e $'s/[\302-\364][\200-\277]*$//'
 }
 
 # ポインタ類（.vault / .project / .active）を読む。**リンクは追わない。**
@@ -147,7 +160,46 @@ read_pointer() { # <パス> [行番号]
     return 1
   fi
   [ -f "$f" ] && [ -s "$f" ] || return 1
-  sed -n "${n}p" "$f" | tr -d '\r'
+
+  local line
+  line="$(sed -n "${n}p" "$f" 2>/dev/null | tr -d '\r')"
+
+  # 制御文字を含む値は採用しない。**ここで弾けば、ポインタ由来の値は
+  # 以降どこへ流れても安全になる。** 表示のたびに消して回るのは取りこぼす。
+  case "$line" in
+    *[[:cntrl:]]*)
+      echo "WARN: ポインタに制御文字が含まれている。採用しない: $f" >&2
+      return 1
+      ;;
+  esac
+
+  printf '%s\n' "$line"
+}
+
+# ポインタへの**書き込み**。読みと対にする。
+#
+# read_pointer だけではリンクを追う書き込みが残る。実際、cmd_init は
+# リンクを検知して警告を出した直後に、そのリンクを通して書いていた。
+# `>` の直書きをこの関数の外に残さない。
+write_pointer() { # <パス> <内容...>
+  local f="${1:-}"; shift
+  [ -n "$f" ] || { echo "ERROR: write_pointer: パスが空だ。" >&2; return 1; }
+
+  if [ -L "$f" ]; then
+    echo "ERROR: ポインタがシンボリックリンクだ。リンク先には書かない: $f" >&2
+    echo "       リンクを消してから繋ぎ直せ。" >&2
+    return 1
+  fi
+
+  local d jd
+  d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: ポインタの置き場所を解決できない: $f" >&2; return 1; }
+  jd="$(cd "$JOURNAL_DIR" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: ジャーナルディレクトリを解決できない: $JOURNAL_DIR" >&2; return 1; }
+  [ "$d" = "$jd" ] || {
+    echo "ERROR: ジャーナル外へ書き込もうとした: $f" >&2; return 1; }
+
+  printf '%s\n' "$@" > "$f"
 }
 
 # Vault ポインタの紐付けに使う「プロジェクトの同一性」。**上書きできない値を使う。**
@@ -171,35 +223,60 @@ project_identity() {
     return 0
   fi
 
-  # worktree では .git が**ファイル**（gitdir ポインタ）であり、cp -r で付いてくる。
-  # そのままだとコピー先が元リポジトリの同一性を名乗り、照合を素通りする。
-  #
-  # git は <common>/worktrees/<name>/gitdir に「その worktree の .git があるべき場所」を
-  # 記録している。**実際の位置と食い違えば、コピーされた偽物**だ。
   # --git-common-dir は「どのリポジトリか」には答えるが
   # 「このディレクトリはそのリポジトリの一部か」には答えない。聞くべき質問が違う。
+  #
+  # **確認できない形では、共通 .git の同一性を名乗らせない。**
+  # 「検査対象が見つからなければ検査しない」はフェイルオープンで、
+  # 細工した .git ファイル（gitdir: /被害者/repo/.git）1本で素通りできた。
+  local common_real
+  common_real="$(cd "$common" 2>/dev/null && pwd -P)" || common_real=""
+  if [ -z "$common_real" ]; then
+    printf '%s\n' "$here"
+    return 0
+  fi
+
+  if [ -d "$PROJECT_DIR/.git" ]; then
+    # 通常のリポジトリ: 自分の .git が共通 .git そのものであることを要求する
+    local own
+    own="$(cd "$PROJECT_DIR/.git" 2>/dev/null && pwd -P)" || own=""
+    if [ -n "$own" ] && [ "$own" = "$common_real" ]; then
+      printf '%s\n' "$common_real"
+      return 0
+    fi
+    printf '%s\n' "$here"
+    return 0
+  fi
+
   if [ -f "$PROJECT_DIR/.git" ]; then
+    # worktree: git が <common>/worktrees/<name>/gitdir に記録した
+    # 「あるべき場所」と実際の位置の一致を**必須**にする。
+    # 記録が無い形（手書きの .git ファイル）は偽物として扱う。
     gitdir="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
     if [ -n "$gitdir" ] && [ -f "$gitdir/gitdir" ]; then
-      recorded="$(cd "$(dirname "$(cat "$gitdir/gitdir")")" 2>/dev/null && pwd -P)" || recorded=""
-      if [ "$recorded" != "$here" ]; then
-        # 元リポジトリの同一性は名乗らせない。自分の実パスを同一性にする
-        printf '%s\n' "$here"
+      recorded="$(cd "$(dirname -- "$(cat "$gitdir/gitdir")")" 2>/dev/null && pwd -P)" || recorded=""
+      if [ -n "$recorded" ] && [ "$recorded" = "$here" ]; then
+        printf '%s\n' "$common_real"
         return 0
       fi
     fi
+    printf '%s\n' "$here"
+    return 0
   fi
 
-  # 共通 .git の実パスを同一性にする。リポジトリ名だけの一致では、
-  # **同名の別ディレクトリへコピーされた場合に素通りする**。
-  ( cd "$common" 2>/dev/null && pwd -P ) || printf '%s\n' "$common"
+  # .git がディレクトリでもファイルでもない（サブディレクトリからの実行など）。
+  # 共通 .git の実パスが自分を含んでいるかで判断する。
+  case "$here/" in
+    "$(dirname -- "$common_real")"/*) printf '%s\n' "$common_real" ;;
+    *) printf '%s\n' "$here" ;;
+  esac
 }
 
 # 同一性（パス）を報告に出すときの見せ方。比較は完全一致のまま行う。
 identity_label() {
   case "${1:-}" in
-    */.git) safe_display "$(basename "$(dirname "${1}")")" ;;
-    */*)    safe_display "$(basename "${1}")" ;;
+    */.git) safe_display "$(basename -- "$(dirname -- "${1}")")" ;;
+    */*)    safe_display "$(basename -- "${1}")" ;;
     *)      safe_display "${1:-}" ;;
   esac
 }
@@ -210,8 +287,8 @@ repo_display_name() {
   local id
   id="$(project_identity)"
   case "$id" in
-    */.git) basename "$(dirname "$id")" ;;
-    *)      basename "$id" ;;
+    */.git) basename -- "$(dirname -- "$id")" ;;
+    *)      basename -- "$id" ;;
   esac
 }
 
@@ -428,7 +505,7 @@ EOF
     fi
   fi
 
-  printf '%s\n%s\n' "$vault" "$identity" > "$VAULT_PTR"
+  write_pointer "$VAULT_PTR" "$vault" "$identity" || exit 1
   echo "Vault を接続した: $vault"
   echo "（接続情報は $VAULT_PTR に保存した。端末ごとの設定なので Git には乗せない）"
 }
@@ -530,7 +607,7 @@ EOF
     echo "既存の内部ジャーナルを再利用する: $jf"
   fi
 
-  printf '%s\n' "$epic" > "$ACTIVE_PTR"
+  write_pointer "$ACTIVE_PTR" "$epic" || exit 1
   echo "進行中エピック: $epic"
 }
 
@@ -694,7 +771,7 @@ cmd_flush() {
 
   assert_in_journal_dir "$jf"
   rm -f "$jf"
-  if [ -s "$ACTIVE_PTR" ] && [ "$(head -1 "$ACTIVE_PTR")" = "$epic" ]; then
+  if [ "$(read_pointer "$ACTIVE_PTR" 1 2>/dev/null)" = "$epic" ]; then
     rm -f "$ACTIVE_PTR"
   fi
 
@@ -711,15 +788,28 @@ EOF
 
 cmd_where() {
   local v vf epic
-  v="$(vault_dir)" || v="(未接続)"
-  vf="$(vault_file)" || vf="(未接続)"
-  epic="$(resolve_epic)" || epic="(未特定)"
+  # vault_dir は警告を出しうる。2回呼ぶと警告も2回出る（注入文字列も2倍になる）
+  if v="$(vault_dir)"; then
+    vf="$v/projects/$(project_name).md"
+  else
+    v="(未接続)"; vf="(未接続)"
+  fi
+
+  # 表示する値は全て安全側を通す。**1行だけ通して他を素通りさせない。**
+  if epic="$(resolve_epic)" && valid_slug "$epic"; then
+    :
+  elif [ -n "${epic:-}" ]; then
+    epic="(不正な値)"
+  else
+    epic="(未特定)"
+  fi
+
   cat <<EOF
 プロジェクト名 : $(safe_display "$(project_name)")
-Vault ルート   : $v
-Vault ファイル : $vf
+Vault ルート   : $(safe_display "$v")
+Vault ファイル : $(safe_display "$vf")
 内部ジャーナル : $JOURNAL_DIR
-進行中エピック : $epic
+進行中エピック : $(safe_display "$epic")
 EOF
 }
 

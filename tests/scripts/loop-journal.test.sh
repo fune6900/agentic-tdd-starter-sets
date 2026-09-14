@@ -461,6 +461,111 @@ esac
 rm -f "$SANDBOX_JOURNAL/.active"
 
 # ══════════════════════════════════════════════
+suite "loop-journal: リンクされたポインタへ書き込まない（G5 再判定の回帰テスト）"
+# ══════════════════════════════════════════════
+# read_pointer は読みしか守っていなかった。書き込みは生のリダイレクトで
+# リンクを追い、cmd_init はリンクを検知して警告を出した直後に書いていた。
+# .active は追跡可能な通常ファイルとして PR で配送でき、.gitignore は効かない。
+
+new_sandbox
+printf 'export AWS_PROFILE=prod\nsource ~/work/env.sh\n' > "$SANDBOX_ROOT/victim-rc"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/victim-rc" "$SANDBOX_JOURNAL/.active"
+
+it "リンクされた .active へ書き込まない"
+journal start my-epic >/dev/null 2>&1
+assert_file_contains "$SANDBOX_ROOT/victim-rc" "export AWS_PROFILE=prod"
+
+it "リンク先が切り詰められていない"
+assert_eq "$(wc -l < "$SANDBOX_ROOT/victim-rc" | tr -d ' ')" "2"
+
+it "書き込みを拒否した理由を報告する"
+rm -f "$SANDBOX_JOURNAL/.active"
+ln -s "$SANDBOX_ROOT/victim-rc" "$SANDBOX_JOURNAL/.active"
+run journal start other-epic
+assert_contains "$LAST_OUTPUT" "リンク先には書かない"
+rm -f "$SANDBOX_JOURNAL/.active"
+
+new_sandbox
+printf 'original\n' > "$SANDBOX_ROOT/victim2"
+mkdir -p "$SANDBOX_JOURNAL"
+ln -s "$SANDBOX_ROOT/victim2" "$SANDBOX_JOURNAL/.vault"
+
+it "リンクされた .vault へ init が書き込まない"
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+assert_file_contains "$SANDBOX_ROOT/victim2" "original"
+
+it "ジャーナル外へのポインタ書き込みを拒否する"
+rm -f "$SANDBOX_JOURNAL/.vault"
+assert_fails bash -c "
+  . '$REPO_ROOT/tests/scripts/lib.sh' 2>/dev/null
+  JOURNAL_DIR='$SANDBOX_JOURNAL'
+  . /dev/stdin <<'FN'
+$(sed -n '/^write_pointer()/,/^}/p' "$REPO_ROOT/.claude/scripts/loop-journal.sh")
+FN
+  write_pointer '$SANDBOX_ROOT/outside.txt' x
+"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 制御文字を含むポインタは採用しない"
+# ══════════════════════════════════════════════
+# .active は通常ファイルなのでリンク検査では止まらない。
+# /loop-status は常用コマンドで、出力はそのままコンテキストに入る。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+printf 'evil\033[31mINJECTED\n' > "$SANDBOX_JOURNAL/.active"
+run journal where
+
+it "ANSI エスケープが出力に残らない"
+case "$LAST_OUTPUT" in
+  *$'\033'*) fail "ESC が出力された" ;;
+  *) pass ;;
+esac
+
+it "制御文字を含む値を採用しない"
+case "$LAST_OUTPUT" in
+  *INJECTED*) fail "注入された値が採用された" ;;
+  *) pass ;;
+esac
+
+it "双方向制御文字を落とす"
+rm -f "$SANDBOX_JOURNAL/.active"
+printf '%s\n' "$(printf 'A\342\200\256B')" > "$SANDBOX_JOURNAL/.project"
+run journal where
+case "$LAST_OUTPUT" in
+  *$'\342\200\256'*) fail "RLO が出力された" ;;
+  *) pass ;;
+esac
+rm -f "$SANDBOX_JOURNAL/.project"
+
+# ══════════════════════════════════════════════
+suite "loop-journal: 細工した .git で同一性を偽装できない"
+# ══════════════════════════════════════════════
+# 「検査対象が見つからなければ検査しない」はフェイルオープンだった。
+# gitdir: /被害者/repo/.git と書いた .git ファイル1本で素通りできた。
+
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+( cd "$SANDBOX_PROJ" && git -c user.email=t@e.com -c user.name=t \
+    commit -q --allow-empty -m init ) 2>/dev/null
+mkdir -p "$SANDBOX_ROOT/fake"
+cp -r "$SANDBOX_PROJ/.claude" "$SANDBOX_ROOT/fake/"
+printf 'gitdir: %s/.git\n' "$SANDBOX_PROJ" > "$SANDBOX_ROOT/fake/.git"
+
+it "手書きの .git ファイルでは接続できない"
+run env CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" where
+assert_contains "$LAST_OUTPUT" "(未接続)"
+
+it "偽装からの記録が元の Vault に混入しない"
+CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" start sneak >/dev/null 2>&1
+printf -- '- 侵入\n' | CLAUDE_PROJECT_DIR="$SANDBOX_ROOT/fake" \
+  bash "$SANDBOX_ROOT/fake/.claude/scripts/loop-journal.sh" outer plan >/dev/null 2>&1
+assert_file_not_contains "$SANDBOX_VAULT/projects/proj.md" "侵入"
+
+# ══════════════════════════════════════════════
 suite "loop-journal: ポインタの中身を報告に載せない"
 # ══════════════════════════════════════════════
 # 2行目だけサニタイズして1行目を素通りさせていた。境界を越える全ての値に同じ処理を通す。
