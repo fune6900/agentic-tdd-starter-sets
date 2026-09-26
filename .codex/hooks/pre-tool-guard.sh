@@ -50,4 +50,18 @@ for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   fi
 done
 
+# .env 系ファイルへのアクセス。permissions.md の禁止はシェル経由でも守らせる。
+# 部分一致だと process.env まで止まるので、パス区切り・クォート・リダイレクトで語に割って語全体で判定する。
+# .env.example はキー名だけのテンプレートなので通す。
+while IFS= read -r word; do
+  case "$word" in
+    .env.example) ;;
+    .env|.env.*|.env-*)
+      echo "⚠ .env 系ファイルへのアクセスを検知しました: $word" >&2
+      echo "このコマンドはブロックされました。シークレットはシェルから読み書きしません。" >&2
+      exit 2
+      ;;
+  esac
+done < <(printf '%s\n' "$COMMAND" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_.-' '\n')
+
 exit 0
