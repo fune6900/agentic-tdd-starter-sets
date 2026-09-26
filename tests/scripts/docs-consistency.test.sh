@@ -101,6 +101,20 @@ assert_eq "$(echo "$missing" | tr -s ' ')" ""
 it "settings.json が妥当な JSON である"
 assert_ok jq empty .claude/settings.json
 
+# Claude Code がパス付きで照合するのは Edit(path) だけ。Write(path) の deny は何も止めない。
+# 起動時に警告は出るが、読み飛ばされると .env への書き込みが素通りのまま配布される。
+it "deny に照合されない Write(path) ルールが無い"
+assert_eq "$(jq -r '.permissions.deny[] | select(startswith("Write("))' .claude/settings.json)" ""
+
+it "シークレット系ファイルの書き込みが Edit(path) で deny されている"
+missing=""
+for pattern in .env .env.local .env.development .env.production \
+         '**/.env' '**/.env.local' '**/.env.development' '**/.env.production' '**/*secret*'; do
+  jq -e --arg r "Edit($pattern)" '.permissions.deny | index($r)' .claude/settings.json >/dev/null \
+    || missing="$missing $pattern"
+done
+assert_eq "$(echo "$missing" | tr -s ' ')" ""
+
 # ══════════════════════════════════════════════
 suite "docs: 外部記憶の記載整合"
 # ══════════════════════════════════════════════

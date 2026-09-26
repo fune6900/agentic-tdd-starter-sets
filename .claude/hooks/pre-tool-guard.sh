@@ -37,4 +37,18 @@ for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   fi
 done
 
+# .env 系ファイルへのアクセス。settings.json の Edit / Read の deny は Bash に効かない。
+# 部分一致だと process.env まで止まるので、パス区切り・クォート・リダイレクトで語に割って語全体で判定する。
+# .env.example はキー名だけのテンプレート（security.md）なので通す。
+while IFS= read -r word; do
+  case "$word" in
+    .env.example) ;;
+    .env|.env.*|.env-*)
+      echo "⚠ .env 系ファイルへのアクセスを検知しました: $word" >&2
+      echo "このコマンドはブロックされました。シークレットは Bash から読み書きしません。" >&2
+      exit 2
+      ;;
+  esac
+done < <(printf '%s\n' "$COMMAND" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_.-' '\n')
+
 exit 0
