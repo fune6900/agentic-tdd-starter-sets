@@ -265,7 +265,7 @@
   - [ ] `tests/scripts/bootstrap-monitor.test.sh` と `bash tests/run.sh` 全 PASS（shell-lint の多バイト隣接・`$( )` 内 die 検査を含む）
   - [ ] 変異テスト: symlink 検査（各対象）/ noclobber / 既存候補検出 / 冪等判定 を1つずつ外した隔離コピーで対応テストが FAIL
 - **依存**: Issue 4
-- **影響範囲**: `.claude/scripts/bootstrap-monitor.sh`（新規）, `.claude/settings.json`, `tests/scripts/bootstrap-monitor.test.sh`（新規）, `tests/scripts/lib.sh`
+- **影響範囲**: `bootstrap-monitor.sh`（新規・`.claude` 配下の scripts ディレクトリ）, `.claude/settings.json`, `tests/scripts/bootstrap-monitor.test.sh`（新規）, `tests/scripts/lib.sh`
 - **セキュリティ確認**: **必須**（ユーザー操作ゼロで導入先リポジトリに書き込む自動実行経路。symlink による書き込み先すり替えは本リポジトリで実際に指摘された障害クラス）
 - **リトライ上限**: 3
 - **技術的メモ**:

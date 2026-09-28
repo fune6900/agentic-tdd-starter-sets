@@ -1,0 +1,78 @@
+{
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "transcript_path": "/work/project/.claude/transcripts/11111111-1111-4111-8111-111111111111.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "22222222-2222-4222-8222-222222222222",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "サブエージェントが ls と Read を実行",
+    "prompt": "ダミーの指示テキストです。実データは含まれません。",
+    "subagent_type": "general-purpose",
+    "run_in_background": false
+  },
+  "tool_response": {
+    "status": "completed",
+    "prompt": "ダミーの指示テキストです。実データは含まれません。",
+    "agentId": "aaaaaaaaaaaaaaaaa",
+    "agentType": "general-purpose",
+    "harnessNoteCount": 0,
+    "harnessTailCount": 0,
+    "harnessSectionHash": "35bee8bc49d91aa1",
+    "content": [
+      {
+        "type": "text",
+        "text": "ダミーの応答テキストです。実データは含まれません。"
+      }
+    ],
+    "resolvedModel": "claude-haiku-4-5-20251001",
+    "totalDurationMs": 11092,
+    "totalTokens": 14520,
+    "totalToolUseCount": 2,
+    "usage": {
+      "output_tokens_details": {
+        "thinking_tokens": 30
+      },
+      "input_tokens": 8,
+      "cache_creation_input_tokens": 209,
+      "cache_read_input_tokens": 14242,
+      "output_tokens": 61,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 209
+      },
+      "inference_geo": "not_available",
+      "iterations": [
+        {
+          "input_tokens": 8,
+          "output_tokens": 61,
+          "cache_read_input_tokens": 14242,
+          "cache_creation_input_tokens": 209,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 209,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard"
+    },
+    "toolStats": {
+      "readCount": 1,
+      "searchCount": 0,
+      "bashCount": 1,
+      "editFileCount": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "otherToolCount": 0
+    }
+  },
+  "tool_use_id": "toolu_dummy0000000000000000003",
+  "duration_ms": 11093
+}

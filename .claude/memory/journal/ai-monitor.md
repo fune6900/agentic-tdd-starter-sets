@@ -43,3 +43,22 @@ status: active
 - **推定原因**: QA サブエージェントの所要が約 5.9 時間（21,235 秒）と記録された。作業量（ツール 22 回）に対して異常に長い。端末のスリープ・エージェントの待機など何が起きたかは**未確定**。loop-state の時間上限は壁時計で測るため、停滞も経過に数えられる
 - **成果物の状態**: `tests/scripts/monitor-fixtures.test.sh`（docs 検査追加済み・Red）、`.claude/monitor/`（docs に生パス2箇所残存）。全て未コミット
 - **次**: マスターの判断待ち
+
+## 2026-09-28T21:32Z / #17 / halt — 時間上限で3度目の停止（G2 PASS 後）
+
+- **やったこと**: retry 1 の修正（docs 匿名化・テスト重複の共通化）→ G1 ✅ → G2 ✅（記録済み）。G2 のエージェントが報告前に 600 秒無応答で打ち切られ、その後セッションが翌日まで放置され経過 1365 分で停止
+- **各リトライで変えたこと**: retry 1 のみ（前回停止時と同じ内容を継続）
+- **推定原因**: 品質ではなく壁時計。マスター不在中に経過時間が積み上がった（2 回目と同じ構造）
+- **次**: マスターの「続きをお願いします」で再開。変更は無いが clear でゲート記録が消えるため G1 から回し直す
+
+## 2026-09-28T21:46Z / #17 / gates — 二巡目（retry 1 後）全 PASS
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ✅ / G4 ✅ / G5 起動条件外
+- **前回指摘の解消**: docs の実パス残存（高）→ `check_doc_no_leak` で docs/*.md も検査し匿名化。重複2種 → `new_tmp_dir` / `extra_keys` に集約（G4 で確認）
+- **残った低指摘（差し戻さない理由: 重要度低・PASS 条件外）**: G3「emitted の値制約が未検査」「Notification の emitted fixture が無い理由が未明記」「docs の実測結果は語の存在しか検査していない」→ Issue 2 起票時に Planner へ渡す。G4「`new_tmp_dir` と lib.sh の `new_sandbox` が同型」→ 次に lib.sh を触る Issue で統合
+- **epics の1行修正の理由**: docs-consistency が未実装の bootstrap-monitor.sh をパス付き参照で FAIL させたため、テストを緩めず表記を散文にした。Issue 5 着手時にパス表記へ戻す
+
+## 2026-09-28T21:46Z / #17 / done — #17 完了
+
+- **結果**: 実測 fixtures（hook-stdin 18 / emitted 20）とスキーマ文書を確定。`agent_id` は実在するのでエピック前提は維持
+- **次への申し送り**: 後続 Issue は `.claude/monitor/docs/event-schema.md` と fixtures を唯一の入力仕様にする。transcript の usage は message.id で dedup 必須。Notification は -p で未発火なので実測値なし
