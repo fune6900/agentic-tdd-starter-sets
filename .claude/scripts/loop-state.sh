@@ -39,7 +39,7 @@ MAX_MINUTES="$(validated_limit "${LOOP_MAX_MINUTES:-60}" 60 LOOP_MAX_MINUTES)"
 MAX_SAME_GATE_FAIL="$(validated_limit "${LOOP_MAX_SAME_GATE_FAIL:-2}" 2 LOOP_MAX_SAME_GATE_FAIL)"
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo "ERROR: jq が必要だ。インストールしてから出直せ。" >&2
+  echo "ERROR: jq が必要。インストールしてから再実行してください。" >&2
   exit 1
 fi
 
@@ -48,17 +48,17 @@ now_epoch() { date -u +%s; }
 
 require_state() {
   if [ ! -f "$STATE_FILE" ]; then
-    echo "ERROR: ループ状態が無い。先に 'loop-state.sh init <issue>' を実行しろ。" >&2
+    echo "ERROR: ループ状態が無い。先に 'loop-state.sh init <issue>' を実行してください。" >&2
     exit 1
   fi
-  # 壊れた状態ファイルは黙って通さない。中身が読めないとハードストップの判定が
-  # 全て素通りし、上限が一切効かないまま回り続ける。**必ず止まる側に倒す。**
+  # 壊れた状態ファイルはそのまま通さない。中身が読めないとハードストップの判定が
+  # 全て素通りし、上限が効かないまま回り続ける。**必ず止まる側に倒す。**
   # 0 バイトのファイルは jq empty が成功する（値ゼロ個は妥当な入力）。サイズも見る。
   if [ ! -s "$STATE_FILE" ] || ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
     cat >&2 <<'MSG'
 ERROR: ループ状態ファイルが壊れている（空、または不正な JSON）。
-       この状態ではハードストップが機能しない。ループを続行するな。
-       中身を確認し、'loop-state.sh clear' してから init し直せ。
+       この状態ではハードストップが機能しないため、ループを続行しないでください。
+       中身を確認し、'loop-state.sh clear' してから init し直してください。
 MSG
     exit 1
   fi
@@ -80,7 +80,7 @@ write_state() { # stdin から JSON を受けて原子的に書く
 refuse_if_halted() {
   if [ "$(jq -r '.status' "$STATE_FILE")" = "halted" ]; then
     echo "HALTED: $(jq -r '.halt_reason' "$STATE_FILE")" >&2
-    echo "ハードストップ済みだ。ユーザーの指示を仰ぐまでループを再開するな。" >&2
+    echo "ハードストップ済み。ユーザーの指示があるまでループを再開しないでください。" >&2
     exit 1
   fi
 }
@@ -189,12 +189,12 @@ cmd_stop() {
   ハードストップ発動
   理由: $reason
 ════════════════════════════════════════════════
-  実装・コミット・PR 作成を全て停止しろ。
-  ユーザーに以下を報告して指示を仰げ:
+  実装・コミット・PR 作成を全て停止してください。
+  ユーザーに以下を報告して指示を仰いでください:
     1. 何回目のリトライで、どのゲートで、何が落ちたか
     2. 各リトライで何を変えたか（同じ修正の繰り返しになっていないか）
     3. 推定原因と、判断を仰ぎたい選択肢
-  併せて .claude/memory/lessons.md に事実を記録しろ（/loop-retro）。
+  併せて .claude/memory/lessons.md に事実を記録してください（/loop-retro）。
 ════════════════════════════════════════════════
 MSG
   return 1
@@ -223,7 +223,7 @@ cmd_check() {
   for v in "$retry" "$max_retry" "$max_minutes" "$max_gate_fail" "$started"; do
     if ! valid_uint "$v"; then
       echo "ERROR: ループ状態の数値が読めない（'$v'）。判定できないので停止する。" >&2
-      echo "       'loop-state.sh show' で中身を確認しろ。" >&2
+      echo "       'loop-state.sh show' で中身を確認してください。" >&2
       return 1
     fi
   done

@@ -47,7 +47,7 @@ bash .claude/scripts/loop-journal.sh init <vault-path>   # 省略で自動検出
    - 目的 / 意図 / 受け入れ条件（機械判定可能）/ 依存関係 / 影響範囲 / セキュリティ確認の要否
 
 3. ゴールが一行で言い切れない Issue が混ざっていたら、その時点で差し戻す。
-   **曖昧なタスク定義は、下流の全エージェントを無駄に燃やす。**
+   **曖昧なタスク定義は、下流の全エージェントの作業を無駄にする。**
 
 4. **エピックのジャーナルを開き、分解結果を Vault に記録する（アウターの節目）**:
    ```bash
@@ -204,7 +204,7 @@ for Issue in 実行順序:
    git add -A .claude/memory/journal && git commit -m "chore: flush inner-loop journal for epic <epic-slug>"
    ```
    Vault への着地が確認できない場合、`flush` は失敗してジャーナルを残す。**記録は落とさない。**
-   その場合は Vault の接続を直してからやり直す。**手でジャーナルを消すな。**
+   その場合は Vault の接続を直してからやり直す。**ジャーナルは手で削除しない。**
 
 ---
 

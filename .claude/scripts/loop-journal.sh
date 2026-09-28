@@ -111,11 +111,11 @@ assert_in_journal_dir() {
   if [ -L "$f" ]; then
     die "ジャーナルにシンボリックリンクがある: $f
   リンク先を読み書きすると、ジャーナル外のファイルを晒す・書き換えることになる。
-  実体のファイルに置き換えろ。"
+  実体のファイルに置き換えてください。"
   fi
   if [ -L "$JOURNAL_DIR" ]; then
     die "ジャーナルディレクトリがシンボリックリンクだ: $JOURNAL_DIR
-  リンク先に記録を書くと封じ込めが成立しない。実体のディレクトリにしろ。"
+  リンク先に記録を書くと封じ込めが成立しない。実体のディレクトリにしてください。"
   fi
 
   d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || die "パスを解決できない: $f"
@@ -128,7 +128,7 @@ assert_in_journal_dir() {
 
 # 外部由来の値を報告に載せる前に必ず通す。
 # context の出力はコンテキストに入る（CLAUDE.md が「最初の行動」と定めている）。
-# 制御文字を落として切り詰める。**関数の一部にだけ掛けるな。境界を越える全ての値に掛ける。**
+# 制御文字を落として切り詰める。**関数の一部にだけ掛けるのではなく、境界を越える全ての値に掛ける。**
 safe_display() {
   # C0 と DEL はバイト単位で落とせる。C1 と Unicode の双方向制御文字は
   # マルチバイトなので、先頭バイトで固定してから3バイト目の範囲で消す
@@ -187,7 +187,7 @@ write_pointer() { # <パス> <内容...>
 
   if [ -L "$f" ]; then
     echo "ERROR: ポインタがシンボリックリンクだ。リンク先には書かない: $f" >&2
-    echo "       リンクを消してから繋ぎ直せ。" >&2
+    echo "       リンクを削除してから繋ぎ直してください。" >&2
     return 1
   fi
 
@@ -339,7 +339,7 @@ vault_dir() {
     cat >&2 <<MSG
 WARN: Vault ポインタにプロジェクト名が無い（古い形式、または他所からコピーされた）。
       どのプロジェクト用に作られたポインタか確認できないため使わない。
-      このプロジェクトで使うなら繋ぎ直せ:
+      このプロジェクトで使う場合は繋ぎ直してください:
         bash .claude/scripts/loop-journal.sh init <vault-path>
 MSG
     return 1
@@ -353,7 +353,7 @@ MSG
       cat >&2 <<MSG
 WARN: Vault ポインタが古い形式（プロジェクト名で紐付いている）。使わない。
       名前だけの紐付けは、.project ごとコピーされると素通りする。
-      このプロジェクトで使うなら繋ぎ直せ:
+      このプロジェクトで使う場合は繋ぎ直してください:
         bash .claude/scripts/loop-journal.sh init <vault-path>
 MSG
       return 1
@@ -370,7 +370,7 @@ WARN: Vault ポインタが別のプロジェクトのものだ。使わない�
       いま作業しているプロジェクト: ${here_shown}
       他所から .claude/ をコピーして持ち込まれた可能性が高い。
       このプロジェクトの記録を他人の Vault へ書かないため、接続を拒否する。
-      このプロジェクトで使うなら繋ぎ直せ:
+      このプロジェクトで使う場合は繋ぎ直してください:
         bash .claude/scripts/loop-journal.sh init <vault-path>
 MSG
     return 1
@@ -439,9 +439,9 @@ cmd_init() {
       vault="$found"
       echo "Vault を自動検出した: $vault"
     elif [ "$count" -eq 0 ]; then
-      die "Vault が見つからない。パスを明示しろ: loop-journal.sh init <vault-path>"
+      die "Vault が見つからない。パスを明示してください: loop-journal.sh init <vault-path>"
     else
-      echo "Vault の候補が複数ある。どれか1つを引数で指定しろ:" >&2
+      echo "Vault の候補が複数ある。どれか1つを引数で指定してください:" >&2
       printf '%s\n' "$found" >&2
       exit 1
     fi
@@ -531,7 +531,7 @@ cmd_context() {
 EOF
       cat "$jf"
       echo
-      echo "──── ここまでが前回までの経緯。続きから始めろ。 ────"
+      echo "──── ここまでが前回までの経緯。続きから始める。 ────"
       return 0
     fi
   fi
@@ -561,7 +561,7 @@ EOF
       }
     ' "$vf"
     echo
-    echo "──── ここまでが過去エピックの記録。新しいエピックを始めろ。 ────"
+    echo "──── ここまでが過去エピックの記録。新しいエピックを始める。 ────"
     return 0
   fi
 
@@ -576,7 +576,7 @@ cmd_start() {
   local epic="${1:-}" title
   # 題名は frontmatter の二重引用符の中に入る。改行と引用符を落とす。
   title="$(sanitize_line "${2:-}" | tr -d '"')"
-  [ -n "$epic" ] || die "エピック slug を指定しろ。"
+  [ -n "$epic" ] || die "エピック slug を指定してください。"
   require_slug "$epic" "エピック slug"
   mkdir -p "$JOURNAL_DIR"
   local jf
@@ -595,7 +595,7 @@ status: active
 # インナーループ記録: $epic
 
 > **このファイルはアウターループ完了時に Vault へ書き写され、削除される。**
-> 恒久的な教訓は \`.claude/memory/lessons.md\` に書け。ここは「何をやって、なぜそうしたか」の経緯。
+> 恒久的な教訓は \`.claude/memory/lessons.md\` に書く。ここは「何をやって、なぜそうしたか」の経緯。
 > 別端末・別作業者が続きを引き継ぐための記録なので、必ずコミットする。
 
 $ENTRY_MARKER
@@ -616,7 +616,7 @@ EOF
 read_body() {
   local body
   body="$(cat)"
-  [ -n "$body" ] || die "本文が空だ。標準入力で「やったこと」と「なぜ」を渡せ。"
+  [ -n "$body" ] || die "本文が空だ。標準入力で「やったこと」と「なぜ」を渡してください。"
   printf '%s\n' "$body"
 }
 
@@ -625,7 +625,7 @@ cmd_inner() {
   # 先頭の # は表記ゆれとして受け入れるが、それ以外は検証する
   issue="${1:-}"; issue="${issue#\#}"
   title="$(sanitize_line "${3:-}")"
-  [ -n "$issue" ] || die "Issue 番号を指定しろ。"
+  [ -n "$issue" ] || die "Issue 番号を指定してください。"
   require_issue "$issue"
   case "$phase" in
     start|impl|gates|done|halt) ;;
@@ -633,11 +633,11 @@ cmd_inner() {
   esac
 
   local epic jf body
-  epic="$(resolve_epic)" || die "エピックが特定できない。'loop-journal.sh start <epic-slug>' を先に実行しろ。"
+  epic="$(resolve_epic)" || die "エピックが特定できない。'loop-journal.sh start <epic-slug>' を先に実行してください。"
   require_slug "$epic" "エピック slug"
   jf="$(journal_file "$epic")"
   assert_in_journal_dir "$jf"
-  [ -f "$jf" ] || die "内部ジャーナルが無い: ${jf}（'loop-journal.sh start $epic' を実行しろ）"
+  [ -f "$jf" ] || die "内部ジャーナルが無い: ${jf}（'loop-journal.sh start $epic' を実行してください）"
 
   body="$(read_body)" || exit 1
   {
@@ -696,7 +696,7 @@ cmd_outer() {
 
 touch_updated() {
   local f="${1:-}" tmp
-  # 空パスで呼ばれるとカレントディレクトリにゴミを撒く。呼び出し側のバグを黙って通さない。
+  # 空パスで呼ばれるとカレントディレクトリに不要なファイルが残る。呼び出し側のバグをそのまま通さない。
   [ -n "$f" ] && [ -f "$f" ] || { echo "WARN: touch_updated: 対象ファイルが無い: '${f}'" >&2; return 1; }
   tmp="$f.tmp.$$"
   awk -v d="$(today)" '
@@ -711,15 +711,15 @@ touch_updated() {
 
 cmd_flush() {
   local epic jf vf body tmp header
-  epic="$(resolve_epic "${1:-}")" || die "エピックが特定できない。slug を引数で指定しろ。"
+  epic="$(resolve_epic "${1:-}")" || die "エピックが特定できない。slug を引数で指定してください。"
   require_slug "$epic" "エピック slug"
   jf="$(journal_file "$epic")"
   # 削除まで到達する経路なので、パスの封じ込めを rm の前に二重で確認する。
   assert_in_journal_dir "$jf"
   [ -f "$jf" ] || die "内部ジャーナルが無い: $jf"
   # die はサブシェル内では親を殺せない。判定は必ず親側で行う。
-  vf="$(vault_file)" || die "Vault が未接続だ。'loop-journal.sh init <vault-path>' を先に実行しろ。ジャーナルは残した: $jf"
-  [ -f "$vf" ] || die "Vault のプロジェクトファイルが無い: ${vf}（'loop-journal.sh init' で作れ）。ジャーナルは残した: $jf"
+  vf="$(vault_file)" || die "Vault が未接続だ。'loop-journal.sh init <vault-path>' を先に実行してください。ジャーナルは残した: $jf"
+  [ -f "$vf" ] || die "Vault のプロジェクトファイルが無い: ${vf}（'loop-journal.sh init' で作成してください）。ジャーナルは残した: $jf"
 
   # 完了サマリは任意。tty からの実行で空でも通す。
   if [ -t 0 ]; then body=""; else body="$(cat)"; fi
@@ -730,7 +730,7 @@ cmd_flush() {
   # 同じ見出しが既にあると「書けたか」の判定が誤爆する。実測で判定するので致命ではないが警告は出す。
   if grep -qF "$header" "$vf"; then
     echo "WARN: 同じエピックの complete 見出しが既に Vault にある: $header" >&2
-    echo "WARN: 前回の flush が中断した可能性がある。追記後に Vault を目視で確認しろ。" >&2
+    echo "WARN: 前回の flush が中断した可能性がある。追記後に Vault を目視で確認してください。" >&2
   fi
 
   local before after appended
@@ -779,7 +779,7 @@ cmd_flush() {
 Vault へ書き写した: ${vf}（epic: ${epic}）
 内部ジャーナルを削除した: $jf
 
-削除をコミットしろ:
+削除をコミットしてください:
   git add -A .claude/memory/journal && git commit -m "chore: flush inner-loop journal for epic $epic"
 EOF
 }

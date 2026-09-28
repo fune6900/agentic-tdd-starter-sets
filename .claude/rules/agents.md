@@ -167,7 +167,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 - プロダクトコードを書く（Coderに委ねる）
 - テストを書く（QAに委ねる）
-- `.claude/memory/lessons.md` を読まずに分解する（過去の失敗を買い直す行為）
+- `.claude/memory/lessons.md` を読まずに分解する（過去の失敗を繰り返す原因になる）
 - 人間の承認を得ずに実装フェーズへ進ませる
 
 出力物: `.claude/memory/epics/<epic-slug>.md`（目的・意図・受け入れ条件・依存・影響範囲・セキュリティ要否）
