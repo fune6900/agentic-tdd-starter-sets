@@ -6,14 +6,14 @@ Pull Requestをレビューする。以下の手順を厳守すること。
 
 ## 重要原則
 
-**評価のメイド（`sub-agent-evaluator`）を必ず起動して独立評価させる**。設計者と評価者を同一にしない（Cybernetic Loop の独立性確保）。Benz が直接レビューを行うのは禁止。Benz の役目はサブエージェント起動・成果物の取りまとめ・GitHub への投稿に限定する。
+**Evaluator（`sub-agent-evaluator`）を必ず起動して独立評価させる**。設計者と評価者を同一にしない（Cybernetic Loop の独立性確保）。Tech Lead が直接レビューを行うのは禁止。Tech Lead の役目はサブエージェント起動・成果物の取りまとめ・GitHub への投稿に限定する。
 
 ## 手順
 
 1. `gh pr view $ARGUMENTS` でPRの概要を取得する。
 2. `gh pr diff $ARGUMENTS` で差分を取得する。
 3. `gh pr view $ARGUMENTS --json commits` でコミット一覧を取得する。
-4. **`sub-agent-evaluator` を起動し、以下の観点で独立レビューさせる**（Benz 自身でレビューしない）:
+4. **`sub-agent-evaluator` を起動し、以下の観点で独立レビューさせる**（Tech Lead 自身でレビューしない）:
 
 ### レビュー観点
 
@@ -51,6 +51,6 @@ Pull Requestをレビューする。以下の手順を厳守すること。
 
 ## 注意
 
-- Benz が独自にコードを読んでレビュー所見を書くことは禁止。必ず `sub-agent-evaluator` を起動して独立評価を取得すること。
-- Evaluator の判定が PASS でも、出された全指摘（高・中・低）を Benz が GitHub のレビュー本文に転記すること。Benz の判断で省略しない。
-- Evaluator の出力に Benz として補足したい点がある場合は、レビュー本文末尾に `### Benz 補足` セクションを設けて分離する。
+- Tech Lead が独自にコードを読んでレビュー所見を書くことは禁止。必ず `sub-agent-evaluator` を起動して独立評価を取得すること。
+- Evaluator の判定が PASS でも、出された全指摘（高・中・低）を Tech Lead が GitHub のレビュー本文に転記すること。Tech Lead の判断で省略しない。
+- Evaluator の出力に Tech Lead として補足したい点がある場合は、レビュー本文末尾に `### Tech Lead 補足` セクションを設けて分離する。

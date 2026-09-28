@@ -49,7 +49,7 @@ bash .claude/scripts/worktree.sh remove feat/42-article-search
 bash .claude/scripts/worktree.sh prune
 ```
 
-- **未コミットの変更が残っている場合、スクリプトが削除を拒否する**。中身を確認してマスターに報告すること
+- **未コミットの変更が残っている場合、スクリプトが削除を拒否する**。中身を確認してユーザーに報告すること
 - ブランチ自体は削除されない。ブランチの削除は `gh pr merge --delete-branch` に任せる
 
 ---
@@ -83,5 +83,5 @@ bash .claude/scripts/worktree.sh prune
 
 - 作業領域はリポジトリ**外**（既定で `<リポジトリの親>/.worktrees/<repo名>/`）に作られる。リポジトリ内に作らない
 - `LOOP_WORKTREE_ROOT` 環境変数で置き場所を変更できる
-- 未コミットの変更がある作業領域を強制削除しない。マスターの明示的な許可が必要
+- 未コミットの変更がある作業領域を強制削除しない。ユーザーの明示的な許可が必要
 - 作業領域を作りっぱなしにしない。マージ後は必ず撤収する

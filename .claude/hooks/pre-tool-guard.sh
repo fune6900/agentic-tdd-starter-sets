@@ -32,7 +32,7 @@ for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   if echo "$COMMAND" | grep -qi "$pattern"; then
     echo "⚠ 危険なコマンドを検知しました: $COMMAND" >&2
     echo "パターン: $pattern" >&2
-    echo "このコマンドはブロックされました。メイド長の判断により実行を拒否します。" >&2
+    echo "このコマンドはブロックされました。Tech Lead の判断により実行を拒否します。" >&2
     exit 2
   fi
 done

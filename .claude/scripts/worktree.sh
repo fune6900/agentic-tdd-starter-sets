@@ -95,7 +95,7 @@ cmd_remove() {
 
   # 未コミットの変更を巻き込んで消さない。
   if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
-    echo "ERROR: 未コミットの変更が残っている。マスターに確認せず消すな。" >&2
+    echo "ERROR: 未コミットの変更が残っている。ユーザーに確認せず消すな。" >&2
     git -C "$dir" status --short >&2
     exit 1
   fi

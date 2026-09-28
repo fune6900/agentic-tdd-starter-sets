@@ -1,7 +1,7 @@
 # 開発フロー（TDD駆動）
 
 12ステップの開発フロー。全ての機能実装はこの順序を厳守すること。
-各ステップに参照ルールを明記する。違反はメイド長（Benz）が差し戻す。
+各ステップに参照ルールを明記する。違反はTech Lead が差し戻す。
 
 > **このファイルは「1 Issue をどう作るか」を規定する（インナーループの中身）。**
 > 「どう回してどこで止めるか」は `@.claude/rules/loop-engineering.md` を参照。
@@ -19,9 +19,9 @@
 - 影響範囲（DB/型/UI/テスト/API）を特定する
 - 実装方針が固まるまでコードに触れない
 
-エピック規模（Issue 2本以上）の場合は `/epic-flow` を使い、立案のメイド（`sub-agent-planner`）に分解させる。
+エピック規模（Issue 2本以上）の場合は `/epic-flow` を使い、Planner（`sub-agent-planner`）に分解させる。
 
-**参照**: `@.claude/rules/agents.md`・`@.claude/rules/loop-engineering.md`（Benz / Planner が担当）
+**参照**: `@.claude/rules/agents.md`・`@.claude/rules/loop-engineering.md`（Tech Lead / Planner が担当）
 
 ---
 
@@ -97,28 +97,28 @@ bash .claude/scripts/loop-state.sh init <issue番号> feat/<issue番号>-<機能
 
 **参照**: `@.claude/rules/testing.md`・`@.claude/rules/agents.md`
 
-- 検閲のメイド（QA）がテストを書く
+- QAがテストを書く
 - `npm test -- --run` でテストが**失敗する**ことを確認してから次へ
 
 ### 4-2. 型・スキーマ定義（Architect）
 
 **参照**: `@.claude/rules/conventions.md`・`@.claude/rules/api-design.md`
 
-- 礎のメイド（Architect）が `types/` と Zod スキーマを定義する
+- Architectが `types/` と Zod スキーマを定義する
 - DB変更が必要な場合は `prisma/schema.prisma` を更新する
 
 ### 4-3. 実装（Coder）
 
 **参照**: `@.claude/rules/conventions.md`・`@.claude/rules/security.md`・`@.claude/rules/api-design.md`
 
-- 構築のメイド（Coder）がテストをグリーンにする最小限のコードを書く
+- Coderがテストをグリーンにする最小限のコードを書く
 - `any` 使用禁止。入力バリデーション必須
 
 ### 4-4. UIコンポーネント（Designer、必要な場合）
 
 **参照**: `@.claude/rules/agents.md`
 
-- 図案のメイド（Designer）が Tailwind CSS でスタイリングする
+- Designerが Tailwind CSS でスタイリングする
 
 ### 4-5. ゲート通過【必須】
 
@@ -144,7 +144,7 @@ bash .claude/scripts/loop-state.sh gate G2 fail "受け入れ条件 #2 が実画
 
 - **全 PASS** → 4-6 へ進む
 - **1つでも FAIL** → 差し戻し先を特定して 4-3 / 4-4 に戻る。`loop-state.sh retry "<何を変えるか>"` を記録し、**ゲートは G1 からやり直す**
-- **ハードストップ到達** → コミットも PR 作成もせず、`/loop-retro` で記録してマスターに報告する
+- **ハードストップ到達** → コミットも PR 作成もせず、`/loop-retro` で記録してユーザーに報告する
 
 ```
 ┌──────────────────────────────────────┐
@@ -169,7 +169,7 @@ bash .claude/scripts/loop-state.sh gate G2 fail "受け入れ条件 #2 が実画
 | 型設計の誤り | `sub-agent-architect` |
 | **受け入れ条件そのものの不足** | `sub-agent-planner`（Issue の再定義） |
 
-### 4-6. リファクタリング（Benz 監督）
+### 4-6. リファクタリング（Tech Lead 監督）
 
 - テストがグリーンのまま品質を上げる
 - `npm test -- --run` がグリーンであることを確認

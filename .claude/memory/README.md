@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | `lessons.md` | 教訓。失敗と対処を言語化した資産（Reflection の出力） | **コミットする** |
 | `journal/<epic-slug>.md` | 経緯。インナーループの節目ごとの記録（Vault へ書き写すまでの一時バッファ） | **コミットする** |
-| `epics/<slug>.md` | 立案のメイド（Planner）が出したエピック分解結果 | **コミットする** |
+| `epics/<slug>.md` | Plannerが出したエピック分解結果 | **コミットする** |
 | `loop-state.json` | 実行中のループ状態（retry 回数・ゲート結果・経過時間） | コミットしない |
 
 `loop-state.json` は実行時の一時状態なので `.gitignore` 済み。
@@ -47,10 +47,10 @@ Vault にはプロジェクト横断で「何をやって、なぜそうした�
 
 | いつ | 誰 | 何を |
 | --- | --- | --- |
-| **タスク開始時（最初の行動）** | メイド長（Benz） | `loop-journal.sh context` — 進行中なら内部ジャーナル、新規なら Vault |
-| エピック分解時 | 立案のメイド（Planner） | `lessons.md` 全体 + Vault の直近エピック |
-| Issue 開始時 | メイド長（Benz） | `lessons.md` のうち当該 Issue に関係する項目 |
-| 実装開始時 | 構築のメイド（Coder） | Benz から渡された関連教訓と、前 Issue の設計判断 |
+| **タスク開始時（最初の行動）** | Tech Lead | `loop-journal.sh context` — 進行中なら内部ジャーナル、新規なら Vault |
+| エピック分解時 | Planner | `lessons.md` 全体 + Vault の直近エピック |
+| Issue 開始時 | Tech Lead | `lessons.md` のうち当該 Issue に関係する項目 |
+| 実装開始時 | Coder | Tech Lead から渡された関連教訓と、前 Issue の設計判断 |
 
 読む先の判定:
 
@@ -63,12 +63,12 @@ Vault にはプロジェクト横断で「何をやって、なぜそうした�
 
 | いつ | 誰 | 何を |
 | --- | --- | --- |
-| インナーの節目4点 | メイド長（Benz） | `journal/<epic>.md`（`loop-journal.sh inner`） |
-| アウターの節目 | メイド長（Benz） | Vault へ直接（`loop-journal.sh outer`） |
+| インナーの節目4点 | Tech Lead | `journal/<epic>.md`（`loop-journal.sh inner`） |
+| アウターの節目 | Tech Lead | Vault へ直接（`loop-journal.sh outer`） |
 | ゲート FAIL 時 | 各ゲート担当 | `loop-state.json`（`loop-state.sh gate` 経由） |
-| Issue 完了時 | メイド長（Benz） | `lessons.md` に Reflection を追記（`/loop-retro`） |
-| ハードストップ時 | メイド長（Benz） | `lessons.md` に「解決できなかった事実」を追記 + ジャーナルに `halt` |
-| **エピック完了時** | メイド長（Benz） | `loop-journal.sh flush` で内部ジャーナルを Vault へ書き写して削除 |
+| Issue 完了時 | Tech Lead | `lessons.md` に Reflection を追記（`/loop-retro`） |
+| ハードストップ時 | Tech Lead | `lessons.md` に「解決できなかった事実」を追記 + ジャーナルに `halt` |
+| **エピック完了時** | Tech Lead | `loop-journal.sh flush` で内部ジャーナルを Vault へ書き写して削除 |
 
 インナーの節目は4点だけ。ゲート1つごとには書かない:
 `start`（着手）/ `impl`（実装完了）/ `gates`（ゲート一巡）/ `done` または `halt`（完了・停止）

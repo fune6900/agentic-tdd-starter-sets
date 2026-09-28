@@ -9,15 +9,15 @@
 ## 全体像
 
 ```
-Planner 層   立案のメイド（Planner） … エピック → Issue に分解
+Planner 層   Planner … エピック → Issue に分解
                     ↓ 人間の承認
 Generator 層 QA → Architect → Coder → Designer … 実装
                     ↓
 Validator 層 G1 Evaluator（機械）
-             G2 実証のメイド（実動作）
-             G3 照合のメイド（仕様）
-             G4 校閲のメイド（コード）
-             G5 守衛のメイド（セキュリティ・条件起動）
+             G2 Tester（実動作）
+             G3 Spec Reviewer（仕様）
+             G4 Code Reviewer（コード）
+             G5 Security Reviewer（セキュリティ・条件起動）
                     ↓ 1つでも FAIL → Generator へ差し戻し（retry++）
                     ↓ 全 PASS → PR
 Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継ぐ
@@ -27,13 +27,13 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ## エージェント一覧と責務
 
-### 1. メイド長 / Benz（Tech Lead）
+### 1. Tech Lead
 
 **役割**: 全体監督・タスク分解・Refactor判断
 
 呼び出すタイミング:
 
-- マスターの要求を受けた直後（タスク分解）
+- ユーザーの要求を受けた直後（タスク分解）
 - Refactor フェーズの監督
 - エージェント間の調整が必要な時
 
@@ -44,7 +44,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 2. 礎のメイド / Architect（System Architect）
+### 2. Architect（System Architect）
 
 **役割**: DB スキーマ・TypeScript 型・Zod スキーマの定義
 
@@ -68,7 +68,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 3. 検閲のメイド / QA（TDD Enforcer）
+### 3. QA（TDD Enforcer）
 
 **役割**: テスト設計・Red フェーズ担当
 
@@ -90,7 +90,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 4. 構築のメイド / Coder（Developer）
+### 4. Coder（Developer）
 
 **役割**: Green フェーズ担当・実装
 
@@ -112,7 +112,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 5. 図案のメイド / Designer（UI/UX Specialist）
+### 5. Designer（UI/UX Specialist）
 
 **役割**: UIコンポーネント実装・視覚検証
 
@@ -135,7 +135,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 6. 評価のメイド / Evaluator（G1: 機械ゲート）
+### 6. Evaluator（G1: 機械ゲート）
 
 **役割**: 機械が判定できることだけを機械的に判定する。test / typecheck / lint / build。
 
@@ -154,7 +154,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 7. 立案のメイド / Planner（アウターループの起点）
+### 7. Planner（アウターループの起点）
 
 **役割**: エピックを、AI が実行可能な Issue に分解する。使用モデル: **Opus**（高度な推論が必要なため）
 
@@ -174,7 +174,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 8. 実証のメイド / Tester（G2: 実証ゲート）
+### 8. Tester（G2: 実証ゲート）
 
 **役割**: 受け入れ条件を**実画面・実挙動**で満たしているか確認する。使用モデル: Sonnet
 
@@ -190,11 +190,11 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 出力物: G2 レポート（受け入れ条件ごとの実証結果 + 再現手順）
 
-**QA との違い**: QA は実装**前**に失敗するテストを書く（Red）。実証のメイドは実装**後**に実挙動を確かめる。
+**QA との違い**: QA は実装**前**に失敗するテストを書く（Red）。Testerは実装**後**に実挙動を確かめる。
 
 ---
 
-### 9. 照合のメイド / Spec Reviewer（G3: 仕様ゲート）
+### 9. Spec Reviewer（G3: 仕様ゲート）
 
 **役割**: 実装が Issue の**目的・意図**を満たすか、影響範囲が他へ漏れていないかを照合する。
 
@@ -212,7 +212,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 10. 校閲のメイド / Code Reviewer（G4: コードゲート）
+### 10. Code Reviewer（G4: コードゲート）
 
 **役割**: 人間のエンジニアと同様のコードレビュー。可読性・重複・命名・規約遵守。使用モデル: Sonnet
 
@@ -230,7 +230,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ---
 
-### 11. 守衛のメイド / Security Reviewer（G5: セキュリティゲート）
+### 11. Security Reviewer（G5: セキュリティゲート）
 
 **役割**: セキュリティリスクの厳密な検査。使用モデル: **Opus**（極めて高い精度が必要なため）
 
@@ -263,7 +263,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 ┌──────────────────────────────────────────────┐
 │              Cybernetic Loop                 │
 │                                              │
-│  Planner   立案のメイド / Benz               │
+│  Planner   Planner / Tech Lead               │
 │      ↓ エピック分解・タスク定義               │
 │  Generator QA → Architect → Coder → Designer │
 │      ↓ 実装成果物                            │
@@ -288,7 +288,7 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 ### アウターループ（エピック単位・`/epic-flow`）
 
 ```
-1. 立案のメイド（Planner）  エピック → Issue 分解        ← Planner層
+1. Planner  エピック → Issue 分解        ← Planner層
 2. 人間の承認（★必須）
 3. Issue ごとに /issue-flow を逐次実行                    ← インナーループ
 4. 各 Issue 完了後に /loop-retro で教訓を記録（★必須）     ← Memory層
@@ -299,39 +299,39 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 
 ```
 0. 教訓の読み込み（lessons.md）+ loop-state.sh init      ← Memory層
-1. 検閲のメイド（QA）        テスト設計・Red             ← Generator
-2. 礎のメイド（Architect）   型・スキーマ定義             ← Generator
-3. 構築のメイド（Coder）     実装・Green                 ← Generator
-4. 図案のメイド（Designer）  UI実装（必要な場合）          ← Generator
-5. 評価のメイド（Evaluator） G1 機械ゲート                ← Validator
-6. 実証のメイド（Tester）    G2 実証ゲート                ← Validator
-7. 照合のメイド（Spec）      G3 仕様ゲート                ← Validator
-8. 校閲のメイド（Code）      G4 コードゲート              ← Validator
-9. 守衛のメイド（Security）  G5 セキュリティ（条件起動）    ← Validator
-10. メイド長（Benz）         Refactor監督・PR作成          ← Planner
+1. QA        テスト設計・Red             ← Generator
+2. Architect   型・スキーマ定義             ← Generator
+3. Coder     実装・Green                 ← Generator
+4. Designer  UI実装（必要な場合）          ← Generator
+5. Evaluator G1 機械ゲート                ← Validator
+6. Tester    G2 実証ゲート                ← Validator
+7. Spec Reviewer（Spec）      G3 仕様ゲート                ← Validator
+8. Code Reviewer（Code）      G4 コードゲート              ← Validator
+9. Security Reviewer（Security）  G5 セキュリティ（条件起動）    ← Validator
+10. Tech Lead        Refactor監督・PR作成          ← Planner
 11. /loop-retro              教訓の記録                   ← Memory層
 ```
 
 ### バグ修正
 
 ```
-1. メイド長（Benz）          原因特定・影響範囲の把握 + 教訓の確認
-2. 検閲のメイド（QA）        回帰テスト追加・Red
-3. 構築のメイド（Coder）     修正・Green
-4. 評価のメイド（Evaluator） G1
-5. 実証のメイド（Tester）    G2（再現手順で修正を実証）
-6. 照合のメイド（Spec）      G3（同種の箇所が他に無いか波及調査）
+1. Tech Lead         原因特定・影響範囲の把握 + 教訓の確認
+2. QA        回帰テスト追加・Red
+3. Coder     修正・Green
+4. Evaluator G1
+5. Tester    G2（再現手順で修正を実証）
+6. Spec Reviewer（Spec）      G3（同種の箇所が他に無いか波及調査）
 7. /loop-retro               教訓の記録（★必須。バグは教訓の宝庫）
 ```
 
 ### UIの改善・リファクタリング
 
 ```
-1. 図案のメイド（Designer）  現状確認・設計
-2. 構築のメイド（Coder）     実装
-3. 評価のメイド（Evaluator） G1
-4. 実証のメイド（Tester）    G2（/visual-regression と併用）
-5. 校閲のメイド（Code）      G4
+1. Designer  現状確認・設計
+2. Coder     実装
+3. Evaluator G1
+4. Tester    G2（/visual-regression と併用）
+5. Code Reviewer（Code）      G4
 ```
 
 ---
@@ -342,11 +342,11 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 | -------------------- | -------------------------- | --------------------------------- |
 | `/epic-flow`         | Planner → 各エージェント    | アウターループ開始時               |
 | `/issue-flow`        | Generator + Validator 全体  | Issue 1本を回す時                 |
-| `/loop-retro`        | Benz                       | Issue 完了時・ハードストップ時（必須） |
-| `/loop-status`       | Benz                       | ループ状態の点検                   |
-| `/worktree`          | Benz                       | 作業領域の作成・撤収               |
-| `/smart-commit`      | Benz                       | 全ゲート PASS 後                  |
-| `/create-pr`         | Benz                       | PR作成時                          |
+| `/loop-retro`        | Tech Lead                      | Issue 完了時・ハードストップ時（必須） |
+| `/loop-status`       | Tech Lead                      | ループ状態の点検                   |
+| `/worktree`          | Tech Lead                      | 作業領域の作成・撤収               |
+| `/smart-commit`      | Tech Lead                      | 全ゲート PASS 後                  |
+| `/create-pr`         | Tech Lead                      | PR作成時                          |
 | `/review-pr`         | Validator 4体              | CIグリーン後                      |
 | `/e2e-test`          | QA / Tester                | ローカル動作確認                   |
 | `/visual-regression` | Designer                   | UI変更がある場合                   |
@@ -358,8 +358,8 @@ Memory 層    .claude/memory/lessons.md … 教訓を次の Issue へ引き継�
 ## エージェント間のルール
 
 - 前工程の出力物を必ず確認してから作業を開始する
-- 責務外の判断が必要な場合は Benz に報告する
-- 他エージェントの成果物を勝手に変更しない（変更が必要な場合は Benz を通す）
+- 責務外の判断が必要な場合は Tech Lead に報告する
+- 他エージェントの成果物を勝手に変更しない（変更が必要な場合は Tech Lead を通す）
 - 全エージェントは `@.claude/rules/` の全ルールを遵守する
 - ゲート担当（G1〜G5）は**自分でコードを修正しない**。指摘して差し戻すまでが職務
 - 差し戻しを受けた Generator は、**前回何を変えたか**を確認してから修正する（同じ修正の繰り返しを避ける）
