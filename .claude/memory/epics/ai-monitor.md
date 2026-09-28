@@ -7,7 +7,7 @@
 - マスター確定: 自作の軽量版（hooks → HTTP 受信サーバ → SQLite → 専用 Web UI）。OTel / Grafana は使わない
 - マスター確定: compose は**別ファイル生成**。既存 compose ファイルは絶対に触らない
 - マスター確定: 表示はエージェント状態 / ループ状態 / トークン・コスト / イベント時系列の全部
-- 設計叩き台: `/Users/fune6900/.claude/plans/indexed-yawning-glacier.md`（承認済み）
+- 設計叩き台: `~/.claude/plans/indexed-yawning-glacier.md`（承認済み）
 - 調査で確認した事実（2026-09-28 時点）
   - テンプレに `package.json` は無い。テストは純 bash（`tests/run.sh` → `tests/scripts/*.test.sh`、`lib.sh`）
   - `lib.sh` の `new_sandbox`（L90 付近）はコピー対象スクリプトを**固定列挙**している。新スクリプトは追記しないとサンドボックスに入らない
@@ -62,7 +62,7 @@
   - [ ] transcript JSONL の `message.usage` のキー名一覧と、**同一 `message.id` の行が複数回出現するか**が実測で記録されている（Issue 7 の重複排除の要否が決まる）
   - [ ] `.claude/monitor/test/fixtures/hook-stdin/<Event>.json` が発火した全イベント分あり、実測時のキー集合と一致している
   - [ ] 送信ペイロードのスキーマ（イベント種別の列挙・各キーの型・最大バイト長・必須/任意）が `.claude/monitor/docs/event-schema.md` に定義され、各イベントの期待送信形が `.claude/monitor/test/fixtures/emitted/<Event>.json` にある（Issue 2 と Issue 3 の契約）
-  - [ ] `tests/scripts/monitor-fixtures.test.sh` が以下を検査し PASS する: 全 fixtures が妥当な JSON / emitted fixtures のキーがスキーマ文書の列挙の部分集合 / 全 fixtures の文字列値に実行時の `$HOME`・`whoami` の値・`/Users/`・`/home/` が含まれない
+  - [ ] `tests/scripts/monitor-fixtures.test.sh` が以下を検査し PASS する: 全 fixtures が妥当な JSON / emitted fixtures のキーがスキーマ文書の列挙の部分集合 / 全 fixtures の文字列値に実行時の `$HOME`・`whoami` の値・`/Users`・`/home` 配下のパスが含まれない
   - [ ] 採取用のダンプフックはコミットされていない（`git ls-files` に存在しない）。`settings.local.json` への一時登録は撤去済み
   - [ ] 変異テスト: fixtures に `$HOME` を含む値を1つ注入した隔離コピーで上記テストが FAIL する
 - **依存**: なし

@@ -63,9 +63,11 @@ HOOK_EVENT_NAMES="SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUs
 # 一致したパターンをスペース区切りで返す（空文字列なら安全）。
 # check_no_leak（JSON 用）と check_no_leak_text（Markdown 等プレーンテキスト用）が
 # この判定ロジックを共有する。対象フォーマットが増えてもここ1箇所を直せばよい。
+LEAK_PATTERNS=("$HOME" "$(whoami)" "/Users/" "/home/")
+
 match_leak_patterns() { # <text>
   local text="$1" pat leaked=""
-  for pat in "$HOME" "$(whoami)" "/Users/" "/home/"; do
+  for pat in "${LEAK_PATTERNS[@]}"; do
     [ -n "$pat" ] || continue
     case "$text" in
       *"$pat"*) leaked="$leaked $pat" ;;
@@ -74,13 +76,13 @@ match_leak_patterns() { # <text>
   printf '%s' "$leaked"
 }
 
-# 全文字列値（ネスト含む）から禁止パターンを検出する。見つかった分だけ
+# 全文字列値とオブジェクトのキー名（ともにネスト含む）から禁止パターンを検出する。見つかった分だけ
 # スペース区切りで標準出力へ返す（空文字列なら安全）。
 check_no_leak() { # <json path>
   local f="$1" value leaked=""
   while IFS= read -r -d '' value; do
     leaked="$leaked$(match_leak_patterns "$value")"
-  done < <(jq -j '(.. | strings) + "\u0000"' "$f" 2>/dev/null)
+  done < <(jq -j '([.. | strings] + [.. | objects | keys[]])[] + "\u0000"' "$f" 2>/dev/null)
   printf '%s' "$leaked"
 }
 
@@ -191,6 +193,45 @@ run_dir_checks() { # <monitor_dir>
     [ -e "$f" ] || continue
     check_emitted_fixture "$f" "$keys"
   done
+}
+
+# stdin の Bash コマンド（tool_name が Bash の時の tool_input.command）を返す。無ければ空。
+stdin_bash_command() { # <hook-stdin json path>
+  jq -r 'select(.tool_name == "Bash") | .tool_input.command // empty' "$1" 2>/dev/null
+}
+
+# コマンドの先頭トークン以外の語（秘密値になりうるもの）を1行1語で返す。
+command_rest_words() { # <command string>
+  local -a words
+  read -r -a words <<< "$1"
+  local i
+  for ((i = 1; i < ${#words[@]}; i++)); do
+    printf '%s\n' "${words[$i]}"
+  done
+}
+
+# 先頭トークンのベース名を返す（emitted.bash_command の期待値）。
+command_first_basename() { # <command string>
+  local -a words
+  read -r -a words <<< "$1"
+  [ "${#words[@]}" -ge 1 ] || return 0
+  basename "${words[0]}"
+}
+
+# emitted の全文字列値（ネスト含む）のどれかに、stdin コマンドの先頭以外の語が現れれば
+# その語をスペース区切りで返す（空文字列なら安全）。値は NUL 区切りで丸ごと判定する。
+secret_words_in_emitted() { # <hook-stdin json path> <emitted json path>
+  local stdin_f="$1" emitted_f="$2" cmd word value found=""
+  cmd="$(stdin_bash_command "$stdin_f")"
+  while IFS= read -r word; do
+    [ -n "$word" ] || continue
+    while IFS= read -r -d '' value; do
+      case "$value" in
+        *"$word"*) found="${found} ${word}"; break ;;
+      esac
+    done < <(jq -j '(.. | strings) + "\u0000"' "$emitted_f" 2>/dev/null)
+  done < <(command_rest_words "$cmd")
+  printf '%s' "$found"
 }
 
 # ══════════════════════════════════════════════
@@ -411,5 +452,80 @@ printf '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"%s/leaked"}' "$
 it "自己診断: \$HOME を注入した隔離コピーでは個人情報検査が FAIL する（検出できる）"
 hit="$(check_no_leak "$MUTATED_DIR/mutated-emitted.json")"
 if [ -n "$(echo "$hit" | tr -s ' ')" ]; then pass; else fail "\$HOME の混入を検出できなかった"; fi
+
+# ══════════════════════════════════════════════
+suite "monitor-fixtures: .claude/memory 配下の追跡 Markdown の個人情報検査"
+# ══════════════════════════════════════════════
+# 漏洩の行き先は monitor 配下だけではない（epics / journal / lessons にも実パスは書ける）。
+# git ls-files で追跡対象を拾い、ファイル全文を判定する。失敗時は行番号のみ報告する
+# （値は報告に載せない）。
+
+while IFS= read -r f; do
+  case "$f" in *.md) ;; *) continue ;; esac
+  it "${f} に個人情報が残っていない（ファイル全文判定）"
+  hit="$(check_no_leak_text "$REPO_ROOT/$f")"
+  if [ -z "$(echo "$hit" | tr -s ' ')" ]; then
+    pass
+  else
+    lines=""
+    for pat in "${LEAK_PATTERNS[@]}"; do
+      [ -n "$pat" ] || continue
+      lines="${lines} $(grep -n -F -- "$pat" "$REPO_ROOT/$f" | cut -d: -f1 | tr '\n' ',')"
+    done
+    fail "${f} の行:${lines}"
+  fi
+done < <(git ls-files .claude/memory)
+
+# ══════════════════════════════════════════════
+suite "monitor-fixtures: 秘密値が emitted に出ない（stdin/emitted のペア）"
+# ══════════════════════════════════════════════
+
+for stdin_f in "$HOOK_STDIN_DIR"/*.json; do
+  [ -e "$stdin_f" ] || continue
+  name="$(basename "$stdin_f")"
+  emitted_f="$EMITTED_DIR/$name"
+  [ -e "$emitted_f" ] || continue
+  cmd="$(stdin_bash_command "$stdin_f")"
+  [ -n "$cmd" ] || continue
+
+  it "emitted/${name} に stdin コマンドの先頭以外の語が現れない"
+  assert_eq "$(secret_words_in_emitted "$stdin_f" "$emitted_f" | tr -s ' ')" ""
+
+  it "emitted/${name} の bash_command が stdin コマンドの先頭トークンのベース名と一致する"
+  assert_eq "$(jq -r '.bash_command // empty' "$emitted_f" 2>/dev/null)" "$(command_first_basename "$cmd")"
+done
+
+# ══════════════════════════════════════════════
+suite "monitor-fixtures: 自己診断 — キー名の漏洩と秘密値の混入"
+# ══════════════════════════════════════════════
+
+new_tmp_dir KEY_DIR
+printf '%s' '{"schema_version":1,"usage":{"safe_key":1}}' > "$KEY_DIR/clean-key.json"
+printf '{"schema_version":1,"usage":{"%s/x":1}}' "$HOME" > "$KEY_DIR/leak-key.json"
+
+it "自己診断: 安全なキー名のみの fixture は check_no_leak が何も検出しない"
+assert_eq "$(check_no_leak "$KEY_DIR/clean-key.json" | tr -s ' ')" ""
+
+it "自己診断: ネストしたキー名に \$HOME を注入した fixture は check_no_leak が FAIL する"
+hit="$(check_no_leak "$KEY_DIR/leak-key.json")"
+if [ -n "$(echo "$hit" | tr -s ' ')" ]; then pass; else fail "キー名の \$HOME 混入を検出できなかった"; fi
+
+SECRET_STDIN="$HOOK_STDIN_DIR/PreToolUse.bash-envexport.json"
+SECRET_EMITTED="$EMITTED_DIR/PreToolUse.bash-envexport.json"
+new_tmp_dir SECRET_DIR
+
+it "自己診断: 正しい emitted では秘密値検査が何も検出しない"
+assert_eq "$(secret_words_in_emitted "$SECRET_STDIN" "$SECRET_EMITTED" | tr -s ' ')" ""
+
+it "自己診断: stdin の秘密値を emitted に注入すると秘密値検査が FAIL する"
+secret_word="$(command_rest_words "$(stdin_bash_command "$SECRET_STDIN")" | head -n 1)"
+jq --arg s "$secret_word" '.bash_command = $s' "$SECRET_EMITTED" > "$SECRET_DIR/mutated.json"
+hit="$(secret_words_in_emitted "$SECRET_STDIN" "$SECRET_DIR/mutated.json")"
+if [ -n "$(echo "$hit" | tr -s ' ')" ]; then pass; else fail "秘密値の混入を検出できなかった"; fi
+
+it "自己診断: 秘密値を埋め込んだ値（他の文字列に部分一致）でも検出する"
+jq --arg s "prefix-${secret_word}-suffix" '.file_path = $s' "$SECRET_EMITTED" > "$SECRET_DIR/mutated2.json"
+hit="$(secret_words_in_emitted "$SECRET_STDIN" "$SECRET_DIR/mutated2.json")"
+if [ -n "$(echo "$hit" | tr -s ' ')" ]; then pass; else fail "部分一致の秘密値を検出できなかった"; fi
 
 report

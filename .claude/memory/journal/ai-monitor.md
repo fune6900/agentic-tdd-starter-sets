@@ -62,3 +62,29 @@ status: active
 
 - **結果**: 実測 fixtures（hook-stdin 18 / emitted 20）とスキーマ文書を確定。`agent_id` は実在するのでエピック前提は維持
 - **次への申し送り**: 後続 Issue は `.claude/monitor/docs/event-schema.md` と fixtures を唯一の入力仕様にする。transcript の usage は message.id で dedup 必須。Notification は -p で未発火なので実測値なし
+
+## 2026-09-28T22:37Z / #17 / start — PR #27 レビュー指摘（中3件）の修正
+
+- **やること**: 独立レビュー（PR #27）の中3件を直す。(1) epics/ai-monitor.md:10 の実ユーザー名入り絶対パス除去＋漏洩検査を `.claude/memory/**` へ拡張 (2) check_no_leak をキー名にも適用 (3) stdin のダミー秘密値が対応 emitted に現れないことをテストで固定
+- **なぜ**: (1) は main に実名が載る。検査範囲外で CI を素通りした＝lessons #11 の再々発。パスだけ直すと次の記録追記で再発するので検査範囲ごと直す。(2)(3) は検査が「見ているつもりで見ていない」穴（lessons #5）
+- **方針**: QA が自己診断（変異注入）を先に書いて Red → Coder が検査と epics を修正。低3件はマスター指示で対象外
+
+## 2026-09-28T22:39Z / #17 / impl — レビュー指摘の修正完了
+
+- **やったこと**: QA が `.claude/memory` の追跡 md の漏洩検査・キー名の自己診断・stdin↔emitted の秘密値非出現とベース名一致の検査を追加（Red 2件）。Coder が epics 行10のパスを `~` 表記に、`check_no_leak` を値＋キー名の1経路に統合
+- **なぜ**: パスだけ直すと次の記録で再発する。検査範囲を記録の置き場まで広げるのが本体
+- **捨てた選択肢**: epics 行65（受け入れ条件の文中の ホーム配下を示す字面）の誤検知に除外を設ける案。除外は穴になる（lessons #9 の構図）ので文言の言い換えで回避
+- **結果**: monitor-fixtures 175件 PASS / run.sh 全8スイート PASS
+- **次**: G1 へ
+
+## 2026-09-28T22:47Z / #17 / gates — レビュー修正のゲート一巡
+
+- **結果**: G1 ❌→✅ / G2 ✅ / G3 ✅ / G4 ✅（中2件は Refactor で解消し G1 再実行 ✅）/ G5 起動条件外
+- **FAIL 内容**: G1 — Benz 自身のジャーナル記述が新設の memory 検査に掛かった。検査は緩めず文言を言い換え（retry 1）
+- **Refactor**: G4 中2件（同一の自己診断の重複、禁止パターンの二重列挙 → `LEAK_PATTERNS` に集約）。規約違反ではないが今回書いたコードの重複なので同じ PR で消した
+- **次 Issue への申し送り**: whoami の部分一致が記録の一般語に誤検知しうる（G3）、`secret_words_in_emitted` の jq 再実行・短語の誤一致・名指し fixture の存在確認（G4 低）。PR レビューの低3件も未対応
+
+## 2026-09-28T22:47Z / #17 / done — PR #27 レビュー指摘（中3件）修正完了
+
+- **結果**: 中3件を解消。monitor-fixtures 174件 / run.sh 全8スイート PASS。lessons に #11 の再発と「検査語を字面で書かない」を記録
+- **次**: push して PR #27 を再レビュー
