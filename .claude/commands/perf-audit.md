@@ -5,7 +5,7 @@ Chrome DevTools MCPを使用してWebページのパフォーマンス計測・�
 
 ## 手順
 
-1. 図案のメイド（Designer サブエージェント）を起動し、以下の計測を実行させる。
+1. Designer（Designer サブエージェント）を起動し、以下の計測を実行させる。
 
 ### Phase 1: Lighthouse監査
 - `mcp__chrome-devtools__navigate_page` で対象URLへ遷移する。
@@ -71,7 +71,7 @@ Chrome DevTools MCPを使用してWebページのパフォーマンス計測・�
 ```
 
 ## 注意
-- 開発サーバーが起動していない場合は、先に `npm run dev` の実行をマスターに促すこと。
+- 開発サーバーが起動していない場合は、先に `npm run dev` の実行をユーザーに促すこと。
 - モバイル・デスクトップ両方の計測が求められた場合は `mcp__chrome-devtools__emulate` でデバイスを切り替えて2回計測する。
 - 改善提案は具体的なコード変更レベルまで落とし込むこと。「画像を最適化しましょう」のような曖昧な提案は不可。
 - 計測値が良好（Performance 90以上）な場合でも、改善余地があれば報告する。

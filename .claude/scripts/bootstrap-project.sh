@@ -115,7 +115,7 @@ for _lock in $LOCKFILES; do LOCK_COUNT=$((LOCK_COUNT + 1)); done
 
 if [ "$LOCK_COUNT" -gt 1 ]; then
   note "WARN: ロックファイルが複数ある:$LOCKFILES"
-  note "WARN: 後勝ちで決定する。意図しない場合は不要なロックファイルを消してから生成し直せ。"
+  note "WARN: 後勝ちで決定する。意図しない場合は不要なロックファイルを削除してから生成し直してください。"
 fi
 
 PM="npm"
@@ -174,7 +174,7 @@ if [ -s "$PROJECT_DIR/.nvmrc" ]; then
       NODE_SOURCE=".nvmrc"
     else
       note "WARN: .nvmrc の値（$(value_len "$NVMRC_VALUE") 文字）を Node のバージョンとして解釈できない。"
-      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
+      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で修正してください。"
     fi
   fi
 fi
@@ -193,7 +193,7 @@ if [ -z "$NODE_VERSION" ]; then
       [ -n "$NODE_VERSION" ] && NODE_SOURCE="engines.node"
     else
       note "WARN: package.json の engines.node（$(value_len "$ENGINES_NODE") 文字）を一意に決められない。"
-      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で直せ。"
+      note "WARN: Node $DEFAULT_NODE を使う。必要なら生成後の ci.yml を手で修正してください。"
     fi
   fi
 fi
@@ -432,4 +432,4 @@ fi
 note "CI ワークフローを生成した: .github/workflows/ci.yml"
 note "  パッケージマネージャ: $PM / Node: ${NODE_VERSION}（${NODE_SOURCE}）"
 note "  検出したジョブ:$DETECTED"
-note "  内容を確認してからコミットしろ。以後この生成は走らない（既存ファイルは上書きしない）。"
+note "  内容を確認してからコミットしてください。以後この生成は走らない（既存ファイルは上書きしない）。"

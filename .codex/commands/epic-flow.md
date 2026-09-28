@@ -45,7 +45,7 @@
    git add -A .claude/memory/journal && git commit -m "chore: flush inner-loop journal for epic <epic-slug>"
    ```
    内部ジャーナルは Vault へ書き写された後に削除される。
-   Vault への着地が確認できない場合 `flush` は失敗しジャーナルを残す。**手で消すな。**
+   Vault への着地が確認できない場合 `flush` は失敗しジャーナルを残す。**手で削除しない。**
 
 ## ハードストップ時
 

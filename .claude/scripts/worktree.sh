@@ -26,7 +26,7 @@ slug() { echo "$1" | tr '/' '-'; }
 # git-strategy.md の命名規則（英数字・kebab-case）に合わせて境界で弾く。
 require_branch() {
   local b="${1:-}"
-  [ -n "$b" ] || { echo "ERROR: ブランチ名を指定しろ。" >&2; exit 1; }
+  [ -n "$b" ] || { echo "ERROR: ブランチ名を指定してください。" >&2; exit 1; }
   case "$b" in
     *..*|-*|/*|*/)
       echo "ERROR: ブランチ名に使えない形式だ: '$b'" >&2
@@ -95,7 +95,7 @@ cmd_remove() {
 
   # 未コミットの変更を巻き込んで消さない。
   if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
-    echo "ERROR: 未コミットの変更が残っている。マスターに確認せず消すな。" >&2
+    echo "ERROR: 未コミットの変更が残っている。ユーザーに確認せず削除しない。" >&2
     git -C "$dir" status --short >&2
     exit 1
   fi

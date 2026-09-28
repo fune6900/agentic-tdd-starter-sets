@@ -14,9 +14,8 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
 - **TDD強制**: Red → Green → Refactor のサイクルを開発フローに組み込む。テストのないコードはレビュー対象外。
 - **サブエージェント分業**: 「作る役」と「検証する役」を明確に分離した11体。役割を超えた実装は禁止。
 - **多軸ゲート**: 機械 → 実証 → 仕様 → コード → セキュリティの5ゲートを順に通す。1つでも FAIL なら差し戻し。
-- **ハードストップ**: リトライ上限・時間上限・同一ゲート連続失敗で強制停止。無限リトライでコストを燃やさない。
-- **外部メモリ**: 失敗を言語化して永続化し、セッションを跨いで学習させる。同じミスを二度繰り返さない。
-- **キャラ駆動**: 「メイド」というキャラ設定で各エージェントを擬人化。淡々と・冷淡に・最短で。
+- **ハードストップ**: リトライ上限・時間上限・同一ゲート連続失敗で強制停止。無限リトライによるコストの増大を防ぐ。
+- **外部メモリ**: 失敗を言語化して永続化し、セッションを跨いで学習させる。同じミスを繰り返さない。
 
 ---
 
@@ -86,17 +85,17 @@ Next.js + TypeScript + Vitest + Playwright を想定スタックとしている�
 └── .claude/
     ├── settings.json            # 権限・フック設定
     ├── agents/                  # サブエージェント定義（11体）
-    │   ├── sub-agent-planner.md          # 立案（エピック分解・Opus）
-    │   ├── sub-agent-qa.md               # 検閲（Red フェーズ）
-    │   ├── sub-agent-architect.md        # 礎（型・スキーマ）
-    │   ├── sub-agent-coder.md            # 構築（Green フェーズ）
-    │   ├── sub-agent-designer.md         # 図案（UI/Tailwind）
-    │   ├── sub-agent-evaluator.md        # 評価（G1 機械ゲート）
-    │   ├── sub-agent-tester.md           # 実証（G2 実動作）
-    │   ├── sub-agent-spec-reviewer.md    # 照合（G3 仕様）
-    │   ├── sub-agent-code-reviewer.md    # 校閲（G4 コード）
-    │   ├── sub-agent-security-reviewer.md # 守衛（G5 セキュリティ・Opus）
-    │   └── sub-agent-knowledge.md        # 蒐集（任意・テンプレ）
+    │   ├── sub-agent-planner.md          # Planner（エピック分解・Opus）
+    │   ├── sub-agent-qa.md               # QA（Red フェーズ）
+    │   ├── sub-agent-architect.md        # Architect（型・スキーマ）
+    │   ├── sub-agent-coder.md            # Coder（Green フェーズ）
+    │   ├── sub-agent-designer.md         # Designer（UI/Tailwind）
+    │   ├── sub-agent-evaluator.md        # Evaluator（G1 機械ゲート）
+    │   ├── sub-agent-tester.md           # Tester（G2 実動作）
+    │   ├── sub-agent-spec-reviewer.md    # Spec Reviewer（G3 仕様）
+    │   ├── sub-agent-code-reviewer.md    # Code Reviewer（G4 コード）
+    │   ├── sub-agent-security-reviewer.md # Security Reviewer（G5 セキュリティ・Opus）
+    │   └── sub-agent-knowledge.md        # Curator（任意・テンプレ）
     ├── commands/                # スラッシュコマンド定義
     │   ├── epic-flow.md         # アウターループ
     │   ├── issue-flow.md        # インナーループ
@@ -219,22 +218,22 @@ Codex ではプロジェクトルートの `AGENTS.md` が入口になる。`AGE
 
 ## 🤖 サブエージェント
 
-| 名前 | 日本語名 | 役割 | 層 | モデル |
-| --- | --- | --- | --- | --- |
-| Benz | メイド長 | 全体監督・オーケストレーション・Refactor判断 | Planner | — |
-| Planner | 立案のメイド | エピック → Issue 分解、受け入れ条件の確定 | Planner | Opus |
-| QA | 検閲のメイド | テスト設計（Red） | Generator | Sonnet |
-| Architect | 礎のメイド | DB / 型 / Zod スキーマ定義 | Generator | Sonnet |
-| Coder | 構築のメイド | 実装（Green） | Generator | Sonnet |
-| Designer | 図案のメイド | UI / Tailwind / 視覚検証 | Generator | Sonnet |
-| Evaluator | 評価のメイド | **G1** 機械ゲート（test/type/lint/build） | Validator | Sonnet |
-| Tester | 実証のメイド | **G2** 実証ゲート（Playwright で実画面確認） | Validator | Sonnet |
-| Spec Reviewer | 照合のメイド | **G3** 仕様ゲート（目的・意図・影響範囲） | Validator | Sonnet |
-| Code Reviewer | 校閲のメイド | **G4** コードゲート（可読性・規約） | Validator | Sonnet |
-| Security Reviewer | 守衛のメイド | **G5** セキュリティゲート（**条件起動**） | Validator | Opus |
+| 名前 | 役割 | 層 | モデル |
+| --- | --- | --- | --- |
+| Tech Lead | 全体監督・オーケストレーション・Refactor判断 | Planner | — |
+| Planner | エピック → Issue 分解、受け入れ条件の確定 | Planner | Opus |
+| QA | テスト設計（Red） | Generator | Sonnet |
+| Architect | DB / 型 / Zod スキーマ定義 | Generator | Sonnet |
+| Coder | 実装（Green） | Generator | Sonnet |
+| Designer | UI / Tailwind / 視覚検証 | Generator | Sonnet |
+| Evaluator | **G1** 機械ゲート（test/type/lint/build） | Validator | Sonnet |
+| Tester | **G2** 実証ゲート（Playwright で実画面確認） | Validator | Sonnet |
+| Spec Reviewer | **G3** 仕様ゲート（目的・意図・影響範囲） | Validator | Sonnet |
+| Code Reviewer | **G4** コードゲート（可読性・規約） | Validator | Sonnet |
+| Security Reviewer | **G5** セキュリティゲート（**条件起動**） | Validator | Opus |
 
 呼び出し順序:
-**Planner → QA → Architect → Coder → Designer → G1 → G2 → G3 → G4 → (G5) → Benz（Refactor）**
+**Planner → QA → Architect → Coder → Designer → G1 → G2 → G3 → G4 → (G5) → Tech Lead（Refactor）**
 
 > **作る役と検証する役を混ぜない。** 1体に全部やらせるより、分けたほうが品質が上がる。
 > G5 は常駐しない。認証・外部入力・SQL・シークレット・危険 API・依存追加に触れる Issue でのみ起動する。
@@ -334,7 +333,7 @@ bash .claude/scripts/bootstrap-project.sh             # 生成する
 
 ## ⛔ ハードストップ
 
-「合格するまでやり直せ」とだけ命じるのは設計放棄。解けない問題に無限リトライしてコストが死ぬ。
+「合格するまでやり直す」だけのループは、解けない問題に対して無限にリトライし、コストが際限なく増える。そのため停止条件を設ける。
 
 | 停止条件 | 既定値 | 環境変数 |
 | --- | --- | --- |
@@ -350,7 +349,7 @@ bash .claude/scripts/loop-state.sh check                   # 判定（exit 1 で
 ```
 
 到達すると `.claude/hooks/loop-guard.sh` がサブエージェント起動・コミット・PR 作成を**ブロック**する。
-勝手に進むな。勝手に止まるな。人間に報告して指示を仰げ。
+到達後は独断で先に進むことも作業を放棄することもせず、人間に報告して指示を仰ぐ。
 
 ---
 
@@ -412,7 +411,7 @@ Vault が繋がっていない端末では失敗してジャーナルを残す�
 
 ## 💬 トーン
 
-エージェント／メイン Claude のコミュニケーションは、デフォルトでは「冷淡・タメ口・極短報告」のトーン。
+エージェント／メイン Claude のコミュニケーションは、デフォルトでは丁寧語（です・ます調）で、結論を先に述べる簡潔な報告。
 気に入らなければ `CLAUDE.md` の「💬 コミュニケーションスタイル」を書き換えること。
 
 ---
