@@ -1,0 +1,16 @@
+{
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "transcript_path": "/work/project/.claude/transcripts/11111111-1111-4111-8111-111111111111.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "22222222-2222-4222-8222-222222222222",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "サブエージェントが ls と Read を実行",
+    "prompt": "ダミーの指示テキストです。実データは含まれません。",
+    "subagent_type": "general-purpose",
+    "run_in_background": false
+  },
+  "tool_use_id": "toolu_dummy0000000000000000003"
+}
