@@ -1,0 +1,57 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-guard.sh"
+        },
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/loop-guard.sh"
+        }
+      ]
+    },
+    {
+      "matcher": "Task",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/loop-guard.sh"
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Write|Edit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/post-tool-format.sh"
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/stop-quality-check.sh"
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/scripts/bootstrap-project.sh --quiet"
+        }
+      ]
+    }
+  ]
+}

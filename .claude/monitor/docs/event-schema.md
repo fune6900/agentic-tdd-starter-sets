@@ -19,10 +19,16 @@
 
 ## 型・制約の共通ルール
 
-- 文字列は全て C0 制御文字・DEL（0x7F）・C1 制御文字・双方向制御文字（U+202A-U+202E, U+2066-U+2069 等）を除去してから最大バイト長で切り詰める（`loop-journal.sh` の `safe_display` と同方針）
-- 列挙値は `case` 相当の完全一致でのみ許可する。未知の値は既定へ倒す（`event` は例外的に拒否＝該当イベントごと送らない。他は「unknown」等の安全値に丸める）
+- 文字列の扱いは**フィールドの種別で3通り**に分かれる。「全文字列を切り詰める」ではない
+  - **自由テキスト系（`file_path` のみ）**: ベース名化した後、C0 制御文字・DEL（0x7F）・C1 制御文字・双方向制御文字（U+202A-U+202E, U+2066-U+2069 等）を除去し、最大バイト長で切り詰める（`loop-journal.sh` の `safe_display` と同方針。多バイト文字は途中で割らない）。除去・切り詰めの結果が空ならキーを省略
+  - **識別子系（`session_id` `agent_id` `agent_type` `tool_name` `tool_use_id` `subagent_type`）**: 制御文字の除去も切り詰めもしない。許可文字の完全一致（文字列全体。複数行の値は不可）かつ最大バイト長以内の場合のみ採用し、**1つでも外れたら値ごと捨てる**（切り詰めた断片は送らない）。捨てたキーは省略する。ただしイベント別の必須キー（下記早見表）が捨てられた場合は**イベントごと送らない**
+  - **`bash_command`**: 切り詰めない。許可文字・長さのどちらかを外れたら固定値 `?` に置き換える（詳細は下記フィールド定義）
+- 列挙値は完全一致でのみ許可する。未知の値の扱いはフィールドごとに異なる
+  - `event`: 未知なら**イベントごと送らない**
+  - `reason`（キーが存在する場合）: `other` 以外は `unknown` に丸めて送る
+  - `source` `trigger`: 未知ならキーを**省略**する（`unknown` には丸めない）
 - 真偽値は JSON の `true`/`false` のみ
-- 数値は非負整数のみ。上限を超える値は送らない（フィールドごと省略）
+- 数値は非負整数のみ。上限を超える値・整数でない値・数値でない値は送らない（フィールドごと省略。丸めない）
 
 ## フィールド定義
 
@@ -33,18 +39,30 @@
 | `session_id` | string | 全イベント | 必須 | 最大64バイト。`[A-Za-z0-9-]` のみ |
 | `agent_id` | string | Pre/PostToolUse・SubagentStart・SubagentStop（サブエージェント内部のみ） | 任意 | 最大64バイト。`[A-Za-z0-9]` のみ。無ければキー自体を省略 |
 | `agent_type` | string | 同上 | 任意 | 最大64バイト。`[A-Za-z0-9_-]` のみ |
-| `source` | string（enum） | SessionStart | 任意 | `startup` `resume` `clear` `compact` `fork` のいずれか。他は省略 |
-| `reason` | string（enum） | SessionEnd | 任意 | 実測で確認できた値は `other` のみ。未知の値は `unknown` に丸めて送る。最大32バイト |
-| `trigger` | string（enum） | PreCompact | 任意 | `manual` `auto` のいずれか |
+| `source` | string（enum） | SessionStart | 任意 | `startup` `resume` `clear` `compact` `fork` のいずれか。他は省略（`unknown` に丸めない） |
+| `reason` | string（enum） | SessionEnd | 任意 | 実測で確認できた値は `other` のみ。それ以外の値（文字列以外を含む）は `unknown` に丸めて送る。キーが無ければ省略。送る値は `other` か `unknown` の2種のみ |
+| `trigger` | string（enum） | PreCompact | 任意 | `manual` `auto` のいずれか。他は省略（`unknown` に丸めない） |
 | `tool_name` | string | Pre/PostToolUse | 必須（該当イベントで） | 最大64バイト。`[A-Za-z0-9_-]` のみ（例: `Bash` `Read` `Write` `Edit` `Glob` `Grep` `Agent`） |
 | `tool_use_id` | string | Pre/PostToolUse | 必須（該当イベントで） | 最大64バイト。`[A-Za-z0-9_]` のみ |
 | `subagent_type` | string | PreToolUse（`tool_name` が `Agent` の時のみ。`tool_input.subagent_type` 由来） | 任意 | 最大64バイト。`[A-Za-z0-9_-]` のみ |
-| `bash_command` | string | Pre/PostToolUse（`tool_name` が `Bash` の時のみ） | 任意 | **先頭トークンのベース名のみ。`[A-Za-z0-9._-]` 以外を含めば `?` に置換。最大32バイト**（マスター決定） |
+| `bash_command` | string | Pre/PostToolUse（`tool_name` が `Bash` の時のみ） | 任意 | **先頭トークンのベース名のみ。切り詰めない**（2026-09-30 マスター決定（#18 G5））。判定順序は下記「`bash_command` の判定順序」。結果は `[A-Za-z0-9._-]{1,32}` または `?` のいずれか |
 | `file_path` | string | Pre/PostToolUse（`tool_input.file_path` を持つツールの時のみ） | 任意 | **ベース名のみ**（ディレクトリ部分を除去）。制御文字除去後、最大128バイトで切り詰め |
-| `duration_ms` | integer | PostToolUse | 任意 | 非負整数。上限 3,600,000（1時間）。超過時は省略 |
+| `duration_ms` | integer | PostToolUse | 任意 | 非負整数（小数不可）。0 以上 3,600,000（1時間）以下。範囲外・非整数・非数値は省略（丸めも切り詰めもしない） |
 | `stop_hook_active` | boolean | Stop・SubagentStop | 任意 | — |
-| `model` | string | Stop・SubagentStop（トークン集計と同時のみ） | 任意 | 最大64バイト。`[A-Za-z0-9._-]` のみ。不明な値は `unknown` |
-| `usage` | object | Stop・SubagentStop | 任意 | 下記「usage オブジェクト」参照。transcript 本文は送らず、集計済みの数値のみ |
+| `model` | string | Stop・SubagentStop（トークン集計と同時のみ） | 任意 | 最大64バイト。`[A-Za-z0-9._-]` のみ。不明な値は `unknown`。**`monitor-emit.sh`（#18）は未実装で送らない**（Issue #7 で追加。受信側は任意キーとして受理してよい） |
+| `usage` | object | Stop・SubagentStop | 任意 | 下記「usage オブジェクト」参照。transcript 本文は送らず、集計済みの数値のみ。**`monitor-emit.sh`（#18）は未実装で送らない**（Issue #7 で追加） |
+
+### `bash_command` の判定順序（`monitor-emit.sh` の jq `bashcmd` 定義の事実）
+
+入力は `tool_input.command`（`tool_name` が `Bash` の時のみ）。上から順に評価し、最初に該当した時点で確定する。
+
+1. 文字列でなければキーを省略
+2. 先頭 4096 文字だけを見て、空白（スペース・タブ・CR・LF）区切りの**先頭トークン**を取る。空白のみ・空文字ならキーを省略
+3. **許可文字検証**: 先頭トークン全体（パス区切り `/` を含む）が `[A-Za-z0-9._/-]` のみで構成されていなければ `?`。パス部分に許可外の文字（`~` `$` `"` `=` 非 ASCII 等）が1文字でもあれば、ベース名が無害でも `?`（`FOO=bar cmd` の先頭トークン `FOO=bar` も `?`。値は現れない）
+4. **ベース名化**: `/` で分割した最後の要素を取る。空（トークンが `/` で終わる場合など）なら `?`
+5. **長さ判定**: ベース名化後のバイト長が 32 を**超えたら切り詰めずに `?`**（切り詰めた断片は送らない）。32 バイトちょうどはそのまま送る
+
+サーバ側検証（#19）はこの結果に対して `?` または `[A-Za-z0-9._-]{1,32}` の完全一致で判定する。`/` は出力に現れない。
 
 ### `usage` オブジェクト（Issue #7 予約。実測した `message.usage` のキーに基づく）
 
@@ -91,6 +109,7 @@ content block 数だけ複製され、複製のたびに同一の `message.usage
 ## 変更履歴
 
 - `schema_version: 1`（Issue #17 で確定。以降のイベント種別・フィールド追加は `schema_version` を上げてから行う）
+- 2026-09-30 マスター決定（#18 G5）: `bash_command` は切り詰めず、許可文字外・ベース名化後 32 バイト超過は `?` とする。あわせて共通ルールを実装（`monitor-emit.sh` の jq）に合わせて書き直した（識別子系は検証落ちで値ごと省略・必須キー落ちはイベントごと不送信、`source` `trigger` は未知なら省略、`model` / `usage` は #18 では未送信）。`schema_version` は **1 のまま**: キー集合・型は不変で、新しい記述で許される値の集合は旧記述の部分集合（切り詰めた断片は実装が一度も送っていない）。旧記述で作った検証も、実装が出す全ペイロードを受理できる
 
 <!-- SCHEMA:KEYS -->
 - `schema_version`
