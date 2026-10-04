@@ -137,3 +137,44 @@ status: active
 - **なぜ**: 最終的に効いたのは curl `-q` と jq の `HOME=/dev/null`。宛先固定は argv と env を塞ぐだけでは足りず、ツール自身が読む設定ファイルまで塞ぐ必要があった。32 バイト超の `?` 化はマスター決定
 - **残課題**: README のフック一覧未記載、同期 jq のレイテンシ・stdin 上限、全フック共通の `$CLAUDE_PROJECT_DIR` 非クォートと `BASH_ENV`、G4 低3件
 - **次**: #19（受信サーバ）。契約は `event-schema.md`（retry 2 で実装に一致させた）。`duration_ms` は値の整数性で判定（`1.0` 表記が来る）。`reason` は `other`/`unknown` の2値。`model`/`usage` は #18 では未送信（#23 で追加）
+
+## 2026-10-04T07:44Z / #19 / start — 受信サーバが検証済みイベントを SQLite に保存し、セッション・エージェント木を /api/state と SSE で返す
+
+- **やったこと**: #19 に着手。#18 をエピック進捗表で完了に更新。時間予算は Issue に無いため 180 分で init（受け入れ条件 17 件・G5 必須・CI 変更あり。#18 は G1〜G4 で約 49 分、G5 単体で長時間化した前例あり）
+- **なぜ**: 送信側（#18）が main に入り、受け手が無い状態。ビュー（#21）・ループ状態（#22）・コスト（#23）の全てがこの状態源に依存する
+- **方針**: `.claude/monitor/server/` に node 組み込みのみ（`node:http` / `node:sqlite`）で `validate.mjs`（スキーマ検証・fail closed）/ `store.mjs`（プリペアドステートメント・保持期間）/ `derive.mjs`（状態導出の純関数）/ `server.mjs`（HTTP・Host/Origin/Content-Type・上限・SSE）に分ける。検証と導出を純関数に切り出すのは、`node --test` で fixture 系列から機械検証できるようにするため。契約は `event-schema.md`（#18 retry 2 で実装に一致済み）。#18 とは倒す方向が逆（フックは fail open、サーバは fail closed）
+- **既定値（マスター承認済み・Planner 既定案）**: ボディ上限 64KB / SSE 同時接続 16 / ポート 4319 / 保持 7 日 or 10 万行 / Node 22.13 以上で動く範囲
+- **参照した教訓**: #10 fail closed / #11 行き先の全数列挙（SQLite・/api/state・SSE・stderr）/ #5 変異テスト / #15 限界は止まる範囲で書き既知の限界テストで固定 / #6 上限値は承認済み既定値のみ / #18 外部コマンドが暗黙に読む設定 / #18 G1 は CI の全段と同じコマンドを回す（今回 CI に setup-node を足す）/ #18 契約文書の同時更新 / #17 記録に検査語を字面で書かない
+
+## 2026-10-04T08:16Z / #19 / impl — 受信サーバ実装完了
+
+- **やったこと**: QA が `.claude/monitor/test/*.test.mjs`（128件）と `tests/scripts/monitor-server.test.sh`（43件）、Architect が `server/schema.mjs`（受信スキーマのデータ定義）と `ddl.mjs`、Coder が `validate.mjs` / `derive.mjs` / `store.mjs` / `server.mjs`、security.md「監視の限界（受信側）」、CI に `setup-node@v4`（Node 24）、`.gitignore` に `.claude/monitor/data/`
+- **なぜこの設計か**: 検証はスキーマをデータにして駆動（event-schema.md と 1 対 1 で突き合わせられる）。DB は検索・順序用の3列＋本体 JSON 1列（任意キー・入れ子 usage で ALTER を避け、`list()` の往復で欠落・型変換を起こさない）。順序は `seq` のみ（送信側の値は列にも索引にもしない）。保持期間の削除は起動時・1時間ごと・1000件ごとの3経路（どれか1つだと常駐・バースト・閑散のいずれかで残る）
+- **捨てた選択肢**: 毎 append の DELETE（無駄）、WAL（副ファイル増）、413 を Node 任せ（chunked flood を読み続ける）、Last-Event-ID 再送（契約外）
+- **Issue との差分**: Issue 字面の `node --test .claude/monitor/test/`（ディレクトリ）は Node 22.22 で Cannot find module になる（実測）→ glob で渡す。PR に明記する
+- **変異テスト**: Host→4件 FAIL / Origin→3 / Content-Type→2 / ボディ上限（ストリーム）→1・（宣言）→1 / 未知キー拒否→2 / プレースホルダ（list）→2・（append）→29
+- **懸念**: `[413] Content-Length 宣言` は Linux CI で未確認（socket destroy のタイミング依存）
+- **次**: G1 へ
+
+## 2026-10-04T08:41Z / #19 / gates — 一巡目（G5 FAIL）
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ✅ / G4 ✅（低5件は Refactor で解消、契約文書3件も追記して G1 再実行 ✅）/ G5 ❌
+- **落ちた内容**: G5 中2件。(1) Origin を付けないクロスサイトの no-cors GET（`<img src=/api/stream>`）が Host・Origin 検査を両方通り、SSE 16 枠の占有と `/api/state`（最大10万行を同期で導出、約190ms/回）の連打で監視を盲目にできる。データは ORB/ACAO なしで読めない。(2) DB の保存先パスがシンボリックリンクを追う（コミットされたリンクでリンク先に SQLite を作成・既存 DB を改変。lessons #11 の「リンクは追わない」違反）。低: タイムアウト未設定・`MONITOR_BIND` 非ループバックの警告なし・DB 0644
+- **差し戻し先**: テスト追加 → QA、実装 → Coder
+- **なぜそう判断したか**: (1) は Origin 検査が「ブラウザは常に Origin を付ける」前提に立っていた。no-cors のサブリソース GET では付かない。`Sec-Fetch-Site` で判定するのが一次の対処。CPU は導出結果のキャッシュで抑える。(2) は #11 で既に教訓化した障害クラスの再発（行き先の symlink を数えていない）。エージェント定義は中1件で FAIL とする基準のため、それに従った
+
+## 2026-10-04T08:52Z / #19 / impl — G5 差し戻し（retry 1）の修正
+
+- **やったこと**: QA が `server-fetch-site.test.mjs`（14件）・`server-dbpath.test.mjs`（15件）を追加（Red 26件）。Coder が `db-guard.mjs`（`prepareDbPath`）を新設、`server.mjs` に Sec-Fetch-Site 検査・`/api/state` の導出キャッシュ・`dataDir`/`derive` 注入、`store.mjs` に `lastSeq()`、security.md を更新
+- **なぜ**: Origin 検査は「ブラウザは常に Origin を付ける」前提だったが、no-cors のサブリソース GET には付かない → `Sec-Fetch-Site` が `same-origin`/`none` 以外なら 403（ヘッダ無しの curl・フックは通す）。`/api/state` は最大10万行を毎回導出していた → `MAX(seq)` が変わった時だけ再導出（prune で行が消えた時も破棄）。DB パスは検査してから作成（DB・WAL・SHM・journal・ディレクトリ・親を lstat、realpath 突合、新規作成は `O_EXCL`、0700/0600 を chmod で確定）。明示指定にも同じ検査（fail closed）
+- **捨てた選択肢**: 明示指定 `MONITOR_DB` を検査対象外にする案（持ち主の意図とみなせるが fail closed を優先）、全祖先の lstat（macOS の `/var` 等で誤拒否）、TOCTOU を完全に消す試み（不可能。止まる範囲を限界に書いた）
+- **変異テスト**: Sec-Fetch-Site→8件 FAIL / キャッシュ除去→4 / キャッシュ陳腐化→4 / lstat（DB 系）→4 / lstat（dir）＋realpath→4（単独は相互に冗長で 0）/ mode＋chmod（dir）→2 / chmod＋wx mode（DB）→2（単独は冗長で 0）/ 既存6変異も再確認（Host 5・Origin 3・CT 2・上限 1+1・未知キー 2・プレースホルダ 37）
+- **次**: G1 から回し直す
+
+## 2026-10-04T09:08Z / #19 / gates — retry 1 後のゲート一巡（全 PASS）
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ✅ / G4 ✅（中2件は Refactor で解消し G1 再実行 ✅）/ G5 ✅
+- **G4 Refactor**: `db-guard.mjs` の `chmodSync` 例外がパス入りで漏れる → `chmodOrReject` で固定文言に。テストの `withServer` 3重実装 → `helpers.mjs` に統一
+- **G5 再検証**: 前回の中2件は PoC 再実行で塞がりを確認。値の変種・prefetch・sendBeacon・form・Service Worker も止まる。低3件: ハードリンク未検査（git では持ち込めない）、chmod がリンクを辿る（TOCTOU 内）、Sec-Fetch-Site 非対応の古いブラウザは SSE 枠を占有できる（人間が受容判断すること）
+- **G5 低の対応**: security.md が「事前に仕込まれたリンクは止まる」と言い切っていた → 「シンボリックリンク」に限定し、ハードリンクと chmod の限界を追記（lessons #15 の再発を防ぐ）
+- **#20 / #24 への申し送り（G3 中）**: DB の置き場所の直接の親がリンクだと起動拒否（macOS の `/tmp` 等）。compose ではリンクを含まない実体パスで DB を指定し、拒否される旨を docs かテストに書く。Host 検査は `127.0.0.1:<実ポート>`/`localhost:<実ポート>` のみ → コンテナの内外ポートを同一にする。既存 DB が別 UID 所有だと chmod で起動失敗
