@@ -130,3 +130,10 @@ status: active
 - **G5 再検証**: 前回の3件は PoC 再実行で塞がりを確認。別経路（`-q` でも効く env、`JQ_LIBRARY_PATH` 等、ロケール）も無し。`BASH_ENV` は全フック共通の既存・範囲外（低）
 - **その他**: retry 2 後の G3 エージェントが 600 秒無応答で打ち切られ、同じ指示を絞って再起動して PASS
 - **申し送り（低）**: `duration_ms` の `1.0` 表記は整数として通る → #19 は値の整数性で判定。README のフック一覧に monitor-emit 未記載。`.codex/hooks.json` は対象外。同期 jq のレイテンシ・stdin サイズ上限が条件に無い。`$CLAUDE_PROJECT_DIR` 非クォートと `BASH_ENV` は全フック共通の別 Issue 候補。G4 低3件（テストの `new_tmp_dir` 重複、固定 sleep の理由、jq の不要な `// "?"`）
+
+## 2026-10-04T07:21Z / #18 / done — #18 完了（PR #28）
+
+- **やったこと**: PR #28 を作成。全ゲート PASS（retry 2、時間上限のハードストップ1回をマスター指示で上限なし再開）
+- **なぜ**: 最終的に効いたのは curl `-q` と jq の `HOME=/dev/null`。宛先固定は argv と env を塞ぐだけでは足りず、ツール自身が読む設定ファイルまで塞ぐ必要があった。32 バイト超の `?` 化はマスター決定
+- **残課題**: README のフック一覧未記載、同期 jq のレイテンシ・stdin 上限、全フック共通の `$CLAUDE_PROJECT_DIR` 非クォートと `BASH_ENV`、G4 低3件
+- **次**: #19（受信サーバ）。契約は `event-schema.md`（retry 2 で実装に一致させた）。`duration_ms` は値の整数性で判定（`1.0` 表記が来る）。`reason` は `other`/`unknown` の2値。`model`/`usage` は #18 では未送信（#23 で追加）
