@@ -28,6 +28,12 @@
 - **再発**: YYYY-MM-DD #<Issue番号>（同じ事象が再発した場合に追記）
 -->
 
+### 2026-10-04 / #18 G1 が CI の検査段を全部回していないと、全ゲート PASS でも CI が red になる
+- **事象**: #18 は G1〜G5 を全 PASS して PR #28 を出したが、CI の「シェル（構文 + 静的解析）」で shellcheck（`-S warning`）が SC2034（未使用変数）2件で FAIL した。PR の独立レビューも LGTM を出していた
+- **原因**: G1 の判定を `bash tests/run.sh` だけで行っていた。CI の shellcheck 段は `tests/run.sh` に含まれておらず、ローカルには shellcheck がインストールされているのに誰も実行していなかった
+- **対処**: 未使用変数を削除し、CI と同じコマンドを手元で実行して終了コード 0 を確認してから push した
+- **次回ルール**: G1 は **`.github/workflows/template-ci.yml` の全 run 段と同じコマンド**を回す。最低でも `find .claude .codex tests -name '*.sh' -type f -print0 | xargs -0 shellcheck -S warning` と `bash tests/run.sh` の両方を、終了コードで判定する
+
 ### 2026-10-04 / #18 差し戻しで挙動を変えたら、後続 Issue が契約に使う文書も同じ retry で直す
 - **事象**: G5 差し戻しで `bash_command` を「32 バイトに切り詰め」から「32 バイト超は `?`」に変えた（マスター決定）。実装・テスト・security.md は直したが、#17 で作った `.claude/monitor/docs/event-schema.md` は旧記述のままで、G3 が FAIL した。#19 のサーバ検証はこの文書を契約に使う
 - **原因**: 差し戻しの修正範囲を「G5 が指摘したファイル」で決め、**変えた値を誰が読んでいるか**（後続 Issue の契約文書）を数えなかった。文書と実装の整合を機械で見るテストも無い
