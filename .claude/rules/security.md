@@ -187,6 +187,47 @@ gh pr create --body-file /tmp/body.md
 
 ---
 
+## 監視の限界（送信側）
+
+`.claude/hooks/monitor-emit.sh` は全セッションで自動実行され、フックの stdin から allowlist 抽出した JSON だけを
+`http://127.0.0.1:<port>/api/events` へ送る。仕様は `.claude/monitor/docs/event-schema.md` が唯一の正。
+ここは**止まる範囲**と**止まらない範囲**の記録。
+
+### 送る項目
+
+- `event` / `session_id` / `tool_name` / `tool_use_id` / `agent_id` / `agent_type`（各々許可文字・最大バイト長を検証済みのもののみ）
+- `bash_command`（Bash コマンドの先頭トークンのベース名（`/` を含むパスはベース名のみ）。`[A-Za-z0-9._-]` 以外を含めば `?`。32 バイトを超えれば切り詰めずに `?`）
+- `file_path`（ベース名のみ。C0 / DEL / C1 / 双方向制御文字を除去し最大 128 バイト）
+- `subagent_type` / `duration_ms` / `source` / `reason` / `trigger` / `stop_hook_active`（列挙・範囲検証済みのもののみ）
+
+### 送らない項目
+
+- `tool_input` / `tool_response` / `prompt` の中身、`cwd` / `transcript_path`、コマンドの2語目以降・引数・環境変数代入
+- 検証に落ちた値（省略する。必須キーが落ちたイベントは送らない）と、スキーマにないキー全て
+
+### 止める仕組み
+
+- 抽出は jq の allowlist。ペイロードは stdin でだけ渡し、jq / curl の argv・一時ファイルには載せない
+- 宛先は `127.0.0.1` 固定で、ホスト系の環境変数では変えられない。`--noproxy '*'` でプロキシ変数も無視する
+- `LOOP_MONITOR=0` で送信しない。`LOOP_MONITOR_PORT` は 1〜65535 の10進以外なら 4319 に倒す
+- 送信は背景化し、curl の fd1 / fd2 を `/dev/null` へ切り離す。`--max-time` で有限時間で終わる
+- jq・curl の設定ファイル（`.curlrc` / `.jq`）を読ませない（curl は `-q`、jq は HOME を差し替えて起動）
+- 常に stdout 0 バイト・stderr 空・exit 0
+
+### 既知の限界
+
+- **Bash コマンドの先頭トークン自体が秘密で、許可文字（`[A-Za-z0-9._-]`）のみで、ベース名化後 32 バイト以内なら、そのまま `bash_command` として送られる。**
+  先頭トークン方式から必然的に通る経路で、値の意味解析はしない。`FOO=xxx cmd` や `export K=xxx` の値は `?` / `export` に落ちて止まる。
+  テスト `known_limit_first_token_secret` がこの挙動を固定している
+- 先頭トークンが 32 バイトを超える場合は `?` になり、切り詰めた先頭部分も送られない
+- PATH 上の `jq` / `curl` 自体のすり替えは止めない（既存フックと同じ。設定ファイルを読ませない対策の範囲外）
+- 止まるのは「送信ボディに載る値」だけ。ローカルの監視サーバ側での保存・表示・転送は範囲外
+- 送信は背景化しているため、ネットワーク失敗・タイムアウト・セッション終了間際のイベントは黙って捨てられる（fail open）
+- `127.0.0.1` 固定は別ホストへの送信を止めるが、同一マシン上でそのポートを先に握った別プロセスには届く
+- worktree で実行しても `LOOP_MONITOR_PORT` が同じなら同じ監視サーバへ送る。worktree の区別はしない（限界として明記）
+
+---
+
 ## `/review-pr` でのチェック項目
 
 レビュー時に以下を必ず確認する:
