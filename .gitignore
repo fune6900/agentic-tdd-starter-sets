@@ -22,6 +22,9 @@ Thumbs.db
 .claude/scheduled_tasks.lock
 .claude/knowledge-base/
 
+# 監視サーバの SQLite（.claude/monitor/server/server.mjs の既定の保存先。コミットしない）
+.claude/monitor/data/
+
 # Logs / temp
 *.log
 tmp/

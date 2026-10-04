@@ -46,8 +46,8 @@
 | `tool_use_id` | string | Pre/PostToolUse | 必須（該当イベントで） | 最大64バイト。`[A-Za-z0-9_]` のみ |
 | `subagent_type` | string | PreToolUse（`tool_name` が `Agent` の時のみ。`tool_input.subagent_type` 由来） | 任意 | 最大64バイト。`[A-Za-z0-9_-]` のみ |
 | `bash_command` | string | Pre/PostToolUse（`tool_name` が `Bash` の時のみ） | 任意 | **先頭トークンのベース名のみ。切り詰めない**（2026-09-30 マスター決定（#18 G5））。判定順序は下記「`bash_command` の判定順序」。結果は `[A-Za-z0-9._-]{1,32}` または `?` のいずれか |
-| `file_path` | string | Pre/PostToolUse（`tool_input.file_path` を持つツールの時のみ） | 任意 | **ベース名のみ**（ディレクトリ部分を除去）。制御文字除去後、最大128バイトで切り詰め |
-| `duration_ms` | integer | PostToolUse | 任意 | 非負整数（小数不可）。0 以上 3,600,000（1時間）以下。範囲外・非整数・非数値は省略（丸めも切り詰めもしない） |
+| `file_path` | string | Pre/PostToolUse（`tool_input.file_path` を持つツールの時のみ） | 任意 | **ベース名のみ**（ディレクトリ部分を除去）。制御文字除去後、最大128バイトで切り詰め。受信側が拒否する文字集合は下記「`file_path` の受信側検証」 |
+| `duration_ms` | integer | PostToolUse | 任意 | 非負整数（小数不可）。0 以上 3,600,000（1時間）以下。範囲外・非整数・非数値は省略（丸めも切り詰めもしない）。受信側は**値が整数か**で判定するため、JSON の `1.0` や `1e3` は整数として受理する（表記は見ない） |
 | `stop_hook_active` | boolean | Stop・SubagentStop | 任意 | — |
 | `model` | string | Stop・SubagentStop（トークン集計と同時のみ） | 任意 | 最大64バイト。`[A-Za-z0-9._-]` のみ。不明な値は `unknown`。**`monitor-emit.sh`（#18）は未実装で送らない**（Issue #7 で追加。受信側は任意キーとして受理してよい） |
 | `usage` | object | Stop・SubagentStop | 任意 | 下記「usage オブジェクト」参照。transcript 本文は送らず、集計済みの数値のみ。**`monitor-emit.sh`（#18）は未実装で送らない**（Issue #7 で追加） |
@@ -64,6 +64,15 @@
 
 サーバ側検証（#19）はこの結果に対して `?` または `[A-Za-z0-9._-]{1,32}` の完全一致で判定する。`/` は出力に現れない。
 
+### `file_path` の受信側検証（`server/schema.mjs` の事実）
+
+送信側で除去済みのはずの文字が1文字でも残っていれば受信側は拒否する（値を直さない）。パターンは Unicode モード（`u`）で、次の文字を含まない文字列のみ受理する。空文字も不可。最大128バイト（UTF-8 のバイト長）。
+
+- C0 制御文字: U+0000-U+001F
+- DEL と C1 制御文字: U+007F-U+009F
+- 双方向制御文字: U+200E, U+200F, U+202A-U+202E, U+2066-U+2069
+- パス区切り: `/`
+
 ### `usage` オブジェクト（Issue #7 予約。実測した `message.usage` のキーに基づく）
 
 | フィールド | 型 | 必須/任意 | 制約 |
@@ -73,6 +82,8 @@
 | `cache_creation_input_tokens` | integer | 任意 | 同上 |
 | `cache_read_input_tokens` | integer | 任意 | 同上 |
 | `thinking_tokens` | integer | 任意 | 同上（`output_tokens_details.thinking_tokens` 由来） |
+
+受信側は `usage: {}`（キーが1つも無い空オブジェクト）を**受理する**（`allowEmpty`）。集計対象が無い場合の送信を許すため。上記5キー以外のキー・整数でない値・範囲外の値は拒否する。
 
 `message.id` 単位で重複排除した後の合計値のみを送る（実測で同一 `message.id` の行が
 content block 数だけ複製され、複製のたびに同一の `message.usage` を持つことを確認済み。
@@ -106,10 +117,20 @@ content block 数だけ複製され、複製のたびに同一の `message.usage
 | `last_assistant_message` | モデルの応答全文。内容を外に出す必要が無い |
 | `background_tasks` / `session_crons` | 実測時は常に空配列で意味のある値を確認できていない。将来必要になれば再検討 |
 
+## 受信側の扱い（Issue #19・導出規則の補足）
+
+受信側（`server/derive.mjs`）が保存済みイベントから状態を導出する際の規則のうち、送信側が知っておくべきもの。キー・型の仕様ではない。順序は受信側が付与する `seq` の昇順のみで決まる。
+
+- メインスレッド（`agent_id` 無し）の状態: `SessionStart` は `waiting`、`UserPromptSubmit` は `running`、`Stop` と `Notification` は `waiting`、`SessionEnd` は `ended`。`SessionStart` だけを受けたセッションは `waiting`
+- `Notification` は #18 の `monitor-emit.sh` からは送られないため、実運用で `waiting` へ遷移するのは `Stop` 由来
+- サブエージェント: `agent_id` を持つイベントで初出のノードは `running` として作る。`SubagentStart` で `running`、`SubagentStop` で `done`
+- 実行中ツールは `PreToolUse` の `tool_use_id` を登録し、同じ `tool_use_id` の `PostToolUse` で消す
+
 ## 変更履歴
 
 - `schema_version: 1`（Issue #17 で確定。以降のイベント種別・フィールド追加は `schema_version` を上げてから行う）
 - 2026-09-30 マスター決定（#18 G5）: `bash_command` は切り詰めず、許可文字外・ベース名化後 32 バイト超過は `?` とする。あわせて共通ルールを実装（`monitor-emit.sh` の jq）に合わせて書き直した（識別子系は検証落ちで値ごと省略・必須キー落ちはイベントごと不送信、`source` `trigger` は未知なら省略、`model` / `usage` は #18 では未送信）。`schema_version` は **1 のまま**: キー集合・型は不変で、新しい記述で許される値の集合は旧記述の部分集合（切り詰めた断片は実装が一度も送っていない）。旧記述で作った検証も、実装が出す全ペイロードを受理できる
+- 2026-10-04 #19 受信側の実装（`server/schema.mjs` / `validate.mjs` / `derive.mjs`）に合わせて追記: `usage: {}` の受理、`file_path` の拒否文字集合の列挙、`duration_ms` の整数判定（`1.0` 受理）、「受信側の扱い」節。挙動変更なし。`schema_version` は **1 のまま**（キー・型・許可値の変更なし）
 
 <!-- SCHEMA:KEYS -->
 - `schema_version`
