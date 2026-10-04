@@ -16,8 +16,8 @@ export const MAX_SSE_CLIENTS = 16;
 export const DEFAULT_PORT = 4319;
 const DEFAULT_BIND = '127.0.0.1';
 // 保持期間の削除: 起動時 + 一定間隔（暇なサーバでも古い行が消える）+ 追記 N 件ごと（バースト時に上限を超え続けない）
-const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
-const PRUNE_EVERY_APPENDS = 1000;
+export const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+export const PRUNE_EVERY_APPENDS = 1000;
 // 既定のデータディレクトリ。gitignore 済みの .claude/monitor/data/（リポジトリにも、ホーム配下にも置かない）
 const DEFAULT_DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const DB_FILE_NAME = 'monitor.db';

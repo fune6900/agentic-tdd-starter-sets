@@ -80,6 +80,9 @@
 //   ボディ上限を外す           server-reject.test.mjs   [413] 65537 バイト・Content-Length 宣言・chunked 無限送信の早期切断
 //   未知キー拒否を外す         validate.test.mjs 未知キー・__proto__ / server-reject.test.mjs [schema] 未知キー
 //   プレースホルダを外す       static.test.mjs（prepare に SQL 連結・埋め込み）/ server.test.mjs [SQL] 原文保存
+//   prune 後の導出キャッシュ破棄を外す  server-prune.test.mjs [prune-cache] 定期 prune で一部だけ消え last_seq 不変でも消えた行由来のセッションが返らない（mock.timers で setInterval のみ偽装）
+//   追記 N 件ごとの prune トリガを潰す  server-prune.test.mjs [prune-append] N-1 件では溜まり N 件目で maxRows に収まる・2 周目も走る（keep-alive で約 0.7 秒 / 1000 件）
+//   起動時の初回 prune を消す          server-prune.test.mjs [prune-startup] 既存 DB の期限切れ行・maxRows 超過分が、追記も tick も無しの起動直後に消える（mock.timers は tick しない）
 //
 // 入力仕様は event-schema.md / hook-events.md / fixtures/emitted/*.json のみ。推測しない（lessons #6）。
 // DB はテストごとに一時ディレクトリ（実ホームに書かない。lessons #17）。
