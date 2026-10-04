@@ -88,3 +88,45 @@ status: active
 
 - **結果**: 中3件を解消。monitor-fixtures 174件 / run.sh 全8スイート PASS。lessons に #11 の再発と「検査語を字面で書かない」を記録
 - **次**: push して PR #27 を再レビュー
+
+## 2026-09-29T18:44Z / #18 / start — monitor-emit フックが allowlist 抽出したイベントだけを 1 秒以内・常に exit 0 で 127.0.0.1 へ送る
+
+- **やったこと**: #18 に着手。時間予算は Issue に無かったため、教訓に従い 120 分で init（受け入れ条件 15 件 + G5 必須。実セッションは回さない）
+- **なぜ**: #17 で入力仕様が確定し、送信側がエピックの最初の実装。サーバ（#19）の契約テストはここの実データを使う
+- **方針**: QA が node 製スタブ受信器と `tests/scripts/monitor-emit.test.sh` を先に書く（Red）→ Coder が `.claude/hooks/monitor-emit.sh` と settings 登録、security.md の限界節。送信は jq で allowlist 抽出 → curl に stdin で渡し `--noproxy '*' --max-time` 付きで `>/dev/null 2>&1 &` 背景化（#17 実測: 切り離さない背景化は実質同期）。値の検証は `case`。fail open はネットワーク失敗のみ、検証できない値は `?`・空へ倒す
+- **参照した教訓**: #11 行き先の全数列挙（送信ボディ / curl argv / stderr / 一時ファイル）/ #10 case で検証・fail open と fail closed の区別・`$( )` 内 die / #5 変異テスト・多バイト隣接 / #15 限界は止まる範囲で書き既知の限界テストで固定 / #9 入力を書き換えてから走査しない / #17 検査語を記録に字面で書かない
+
+## 2026-09-29T19:10Z / #18 / impl — monitor-emit 実装完了
+
+- **やったこと**: QA が `tests/scripts/monitor-emit.test.sh`（259件）・node スタブ `tests/scripts/fixtures/monitor-stub.mjs`・settings の基準 fixture を作成（Red 229件）。Coder が `.claude/hooks/monitor-emit.sh`、settings.json への9イベント登録（既存定義は無変更）、security.md「監視の限界（送信側）」節を追加（Green 259件 / run.sh 全9スイート）
+- **なぜこの設計か**: 抽出と検証を静的な jq プログラム1回に集約し、ペイロードは stdin でのみ渡す → jq・curl の argv に値が載らず、basename/sed 等も起動しない（行き先を増やさない＝lessons #11）。jq の正規表現は `\A`…`\z`（Oniguruma の `^$` は行単位＝lessons #10 の複数行すり抜けと同型）。先頭トークンは許可文字検証 → ベース名 → 32 バイトの順（`x=/a/b` がベース名化で漏れるのを防ぐ）。curl は `--noproxy '*' --connect-timeout 1 --max-time 3` で `{ …; } >/dev/null 2>&1 &`。`async` は不要（#17 実測: fd 切り離しで待たされない）
+- **捨てた選択肢**: grep/sed/basename 抽出・`jq --arg`（argv に値が載る）、一時ファイル経由（行き先が増える）、`reason` 実値の素通し（スキーマ違反。`clear`/`logout` 等は `unknown` に丸まる → #19 の表示で要確認）
+- **変異テスト**: allowlist→116件 FAIL / 制御文字除去→6 / 長さ制限→3 / 背景化→2 / stdout切り離し→3 / `--max-time`→1 / `--noproxy`→9 / ポート検証→13 / `LOOP_MONITOR=0`→2。全防御で対応テストが FAIL
+- **次**: G1 へ
+
+## 2026-09-29T22:11Z / #18 / halt — 時間上限で停止（G5 FAIL 直後）
+
+- **やったこと**: retry 0 / G5 で停止。G1〜G4 PASS（G4 中2件は Refactor で解消し G1 再実行 PASS）→ G5 FAIL と同時に時間上限（経過 205 分 / 120 分）
+- **各リトライで変えたこと**: なし（retry 0）
+- **G5 FAIL の内容**: 高1 — curl に `-q` が無く `.curlrc`（`CURL_HOME`/`XDG_CONFIG_HOME`/`HOME`）で宛先追加・付け替え・ボディのファイル書き出しができる（AC10 と security.md の主張に反する。PoC 再現済み）。中2 — jq が `~/.jq` を自動読込し組み込み関数（`test`/`with_entries` 等）を上書きされ allowlist 迂回・環境変数混入。中3 — `bash_command` は 32 バイト超で切り詰めて先頭 32 バイトを送る（security.md の限界の書き方が挙動と不一致）。低 — `file_path` に U+2028/ALM/ゼロ幅が残る、settings.json の `$CLAUDE_PROJECT_DIR` 非クォート
+- **推定原因（時間）**: G5 サブエージェント1体の所要が約 157 分（9,395 秒・ツール 16 回）。G1〜G4 と Refactor は 19:34Z までに完了（経過約 49 分）。作業量に対し異常に長い。何が起きたかは**未確定**（#17 の QA 5.9 時間と同じ形）
+- **推定原因（G5）**: 確定。外部ツールが HOME 配下の設定ファイルを暗黙に読むことを、入口の列挙に数えていなかった
+- **成果物の状態**: 全て未コミット（monitor-emit.sh / settings.json / security.md / テスト / スタブ）。ジャーナルのコミットも loop-guard にブロックされたため未コミット
+- **次**: マスターの判断待ち
+
+## 2026-09-29T22:44Z / #18 / impl — G5 差し戻し（retry 1）の修正
+
+- **やったこと**: QA が G5 の3件を固定するテストを追加（259→331件、Red 26件）。Coder が curl 第1引数に `-q`、jq を `HOME=/dev/null` で起動、`bash_command` はベース名化後 32 バイト超で `?`。security.md の送る項目・止める仕組み・既知の限界を更新
+- **なぜ**: `.curlrc` は `CURL_HOME`/`XDG_CONFIG_HOME`/`HOME` の3経路があり HOME 差し替えだけでは塞げない → `-q` 必須。jq には `~/.jq` 自動読込を止めるスイッチが無い（`-L` を付けても効いた、実機確認）→ HOME 差し替え。`/dev/null` は両 OS に必ずあり、`/dev/null/.jq` は ENOTDIR で読めない。実在しないパスは攻撃者に作られる余地がある。32 バイト超を `?` にするのはマスター決定（切り詰めは長い秘密の大半を送る）
+- **捨てた選択肢**: `HOME=/var/empty`（macOS で実在保証なし）、`HOME=/nonexistent/x`（作られうる）、`jq -L`（効かない）、32 バイト切り詰めのまま限界として書く案
+- **変異テスト**: `-q` 除去→18件 FAIL / jq HOME 差し替え除去→2 / `?` 化を切り詰めに戻す→4
+- **次**: G1 から回し直す
+
+## 2026-10-04T07:19Z / #18 / gates — retry 1〜2 後のゲート一巡（全 PASS）
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ❌→✅ / G4 ✅ / G5 ✅（retry 2）
+- **落ちた内容**: retry 1 後の G3 — `event-schema.md` の `bash_command`（最大32バイト＝切り詰めと読める）が、マスター決定後の実装（32 バイト超は `?`）とずれていた。#19 の契約になる文書なので差し戻し
+- **差し戻し先**: Architect（スキーマ文書の担当）。実装はマスター決定に従っているので文書側を直す判断。あわせて共通ルールを識別子系／自由テキスト系／bash_command の3分類に書き直した
+- **G5 再検証**: 前回の3件は PoC 再実行で塞がりを確認。別経路（`-q` でも効く env、`JQ_LIBRARY_PATH` 等、ロケール）も無し。`BASH_ENV` は全フック共通の既存・範囲外（低）
+- **その他**: retry 2 後の G3 エージェントが 600 秒無応答で打ち切られ、同じ指示を絞って再起動して PASS
+- **申し送り（低）**: `duration_ms` の `1.0` 表記は整数として通る → #19 は値の整数性で判定。README のフック一覧に monitor-emit 未記載。`.codex/hooks.json` は対象外。同期 jq のレイテンシ・stdin サイズ上限が条件に無い。`$CLAUDE_PROJECT_DIR` 非クォートと `BASH_ENV` は全フック共通の別 Issue 候補。G4 低3件（テストの `new_tmp_dir` 重複、固定 sleep の理由、jq の不要な `// "?"`）
