@@ -195,6 +195,12 @@
   - DOM 生成は `textContent` と `createElement` のみ
   - ループ状態パネル（③）は Issue 6、トークン・コスト（Issue 7）はこの Issue では枠も作らない（過剰先取りをしない）
   - 参照教訓: #11（描画は行き先の一つとして列挙）/ #5（変異テスト）
+  - **#19 / #20 で確定した前提**:
+    - `.claude/monitor/.dockerignore` は許可リスト方式（`*` で全除外 → `!server` で戻す → 秘密パターン）。ビューの静的ファイルを `server/` 以外（例: `public/`）に置くなら、`!public` を秘密パターンより前に足し、Dockerfile に `COPY` を足す。足さないとイメージに入らない。`monitor-image.test.sh` の許可リスト検査（`di_allowlist_ok`）の前提も同時に更新する
+    - ビューは相対 URL だけを使い、`localhost` と `127.0.0.1` を混在させない（Sec-Fetch-Site / Host 検査）
+    - `file_path` には `<` や `"` を含む値が通る。描画時にエスケープする
+    - 待機状態は Stop 由来（#18 は Notification を送らない）
+    - `/api/state` は seq が進むたびに全行から導出する。高頻度ポーリングの前に増分導出か上限を検討する
 
 ---
 
@@ -217,6 +223,7 @@
 - **技術的メモ**:
   - fail closed の**表示版**。lessons #10 の「判定できなかったを合格と同じ扱いにしない」をビューにも適用する
   - fs.watch ではなくポーリング。正しさがイベント通知の到達性に依存しないため
+  - **#20 で確定した前提**: コンテナ内では `./.claude/memory` が `/memory` にディレクトリ単位・読み取り専用でマウントされる（`compose.monitor.yml`）。読む先は `/memory/loop-state.json`。コンテナ外で動かす場合のパスの決め方（環境変数で渡すか）は本 Issue で決める。サーバ（`server.mjs`）にはまだ参照コードが無い
   - 参照教訓: #10（fail closed・symlink）/ #11（行き先列挙）/ #5（変異テスト）
 
 ---
@@ -273,6 +280,11 @@
   - compose の探索ファイル名と `include` が使える最低の Compose 版は公式ドキュメントで確認し、出典をスクリプトのコメントに書く（推測で列挙しない）
   - 書き込み前判定は親シェルで行う（`$( )` 内の die は親を止めない）
   - 参照教訓: #10（symlink・親シェル判定・case）/ #11（照合値の偽装経路）/ #6（探索名は事実から）/ #5（変異テスト・多バイト）/ ci-workflows（出力はコンテキストに入る）
+  - **#20 で確定した前提（実測）**:
+    - `include` で取り込む場合は `include: [{path: compose.monitor.yml, project_directory: .}]` の形が必須。`project_directory` が無いと build context が `.claude/monitor/.claude/monitor` に解決されて失敗する。生成後に `docker compose config` で build context が `./.claude/monitor` を指すことを実コマンドで確認する
+    - 原本は monitor を専用ネットワーク `monitor-net` に置く（導入先のアプリと同居させないため。同居すると Host 偽装で読み書きできる）。実ネットワーク名は compose プロジェクト名で prefix される。導入先が同名の `monitor-net` を定義していると衝突するので、案内文に書く（既存ファイルは触らない方針）
+    - 原本は複製後もバイト一致であることを前提にしたテストがある（`tests/scripts/monitor-image.test.sh`）
+- **#21 / #22 / #23 への共通の前提（#20 で確定）**: 監視用 compose にサービスを足す場合、`monitor-net` に入れたサービスは monitor と同居し、Host を偽れば読み書きできる。監視系以外を入れない。足す場合は Issue に明記し、`monitor-image.test.sh` の分離検査（`c_dedicated_net` / `c_net_isolated`）の前提を見直す
 
 ---
 
@@ -335,7 +347,7 @@
 | --- | --- | --- |
 | 1 | #17 | [x] |
 | 2 | #18 | [x] |
-| 3 | #19 | [ ] |
+| 3 | #19 | [x] |
 | 4 | #20 | [ ] |
 | 5 | #21 | [ ] |
 | 6 | #22 | [ ] |
