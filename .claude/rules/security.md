@@ -272,6 +272,48 @@ gh pr create --body-file /tmp/body.md
 - 削除は時間と件数で行う。DB のパーミッションは `0600`・ディレクトリは `0700` に確定するが、同一ユーザーのプロセスと root は読める
 - 受信は同期の SQLite 書き込み。大量送信への流量制限は無い（64KB・SSE 16 の上限のみ）
 
+### コンテナ側
+
+`.claude/monitor/Dockerfile` と `.claude/monitor/compose.monitor.yml`（原本）でサーバをコンテナで動かす場合の記録。
+止まる範囲だけを書く。
+
+- **公開範囲の設定は2箇所**: compose の `ports`（`127.0.0.1:` bind）とコンテナ内の `MONITOR_BIND=0.0.0.0`。
+  `127.0.0.1` bind が絞るのはホストのネットワーク側だけ。この2つでローカル限定を担保したとは言えない（次の項）
+- **同じ Docker ネットワークのコンテナは到達できる（実測）**: 同じ Docker ネットワークに入ったコンテナは、
+  Host を偽って `127.0.0.1:<port>` にすれば、監視サーバを読み書きできる。Host / Origin 検査は認証ではない
+  （止まるのはブラウザ経由の攻撃だけ）
+- **compose は monitor を専用ネットワークに置く**: `networks: [monitor-net]` で導入先のアプリと同居させない。
+  ただし `docker network connect` で他のコンテナを繋げば同居する。専用ネットワークは同居を避ける配置であって遮断ではない。
+  `internal: true` は published ports をホストから届かなくする（実測）ので使わない
+- **`host.docker.internal` 経由では別ネットワークのコンテナも到達できる（Docker Desktop で実測）**: 専用ネットワーク `monitor-net` で止まるのは
+  コンテナ間の直接通信だけ。別ネットワークのコンテナも `host.docker.internal:<port>` から Host を偽れば、Docker Desktop では到達できる（実測）。
+  Host を偽らなければ 403（実測）。Linux の Docker Engine は未実測（`host.docker.internal` は既定では解決されず、
+  `--add-host host.docker.internal:host-gateway` が要る）。受信に認証が無いこと自体はマスター決定（エピック承認時）で、
+  根本対策（共有トークン）は本 Issue の範囲外
+- Linux の Docker Engine 28.0 より前では、127.0.0.1 に publish したポートへ同じ L2 セグメントのホストから届く既知の経路がある
+  （エンジンのバージョンに依存する。手元では再現していない）
+- コンテナから読めるもの: `/memory`（`.claude/memory` の `:ro` マウント）に journal のポインタ・lessons・epics・loop-state が含まれる
+  （現状サーバは読まない）
+- `docker run` で起動する場合（実測）: `MONITOR_DB` はイメージ既定で `/data/monitor.db`（node 所有）なので指定なしで起動する。
+  `MONITOR_BIND` を渡さない素の `docker run -p` も起動して healthy になるが、コンテナ内は `127.0.0.1` で listen するため、
+  ホストからは到達できない。到達させるには `MONITOR_BIND=0.0.0.0` と `-p 127.0.0.1:` の両方を付ける:
+
+```sh
+docker run -d -e MONITOR_BIND=0.0.0.0 -e LOOP_MONITOR_PORT=<port> \
+  -p 127.0.0.1:<port>:<port> <image>
+```
+
+- `-p` から `127.0.0.1:` を外すと、Docker の仕様どおり全インターフェースに公開される（この形は実際には試していない）。
+  止まるのは `-p` の `127.0.0.1:` bind を付けた場合だけ
+- Host 検査がポート込みなので、`docker run` では内外のポートをそろえる（`-p 4319:4319` の形）。ずれると 403（実測: 外 47321 → 内 4319 で 403）
+- 認証は無い（受信側の限界と同じ）。同一端末の任意のプロセスは到達できる
+- 非 root（`USER node`）・`read_only: true`・`cap_drop: [ALL]`・`no-new-privileges:true`。止まるのはコンテナ内プロセスの
+  権限昇格とルートファイルシステムへの書き込みまで。書き込めるのは DB 用の名前付きボリュームだけ
+- `.claude/memory` は `:ro` の bind（ディレクトリ単位）。コンテナからは読むだけで書き換えられない
+- ベースイメージは digest 固定。脆弱性修正の取り込みは**手動**（digest を取り直して更新する）。自動では追従しない
+- `curl` / `wget` を**追加していない**。ヘルスチェックは `node` 自身が行う。ただし `/usr/bin/wget` は base の alpine に busybox へのリンクとして最初から存在する（`curl` は無い）。
+  止まるのは追加分だけで、busybox の `wget` など base image 由来の fetch 手段は残る。削除はしていない
+
 ---
 
 ## `/review-pr` でのチェック項目

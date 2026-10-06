@@ -146,9 +146,9 @@ assert_file_contains ".github/workflows/template-ci.yml" "pull_request:"
 it "template-ci.yml が main への push で発火する"
 assert_file_contains ".github/workflows/template-ci.yml" "branches: [main]"
 
-it "template-ci.yml に必須の4ジョブが揃っている"
+it "template-ci.yml に必須の5ジョブが揃っている（monitor-smoke は #20 で追加）"
 missing=""
-for job in "shell:" "tests:" "docs:" "hygiene:"; do
+for job in "shell:" "tests:" "docs:" "hygiene:" "monitor-smoke:"; do
   grep -qF "  $job" .github/workflows/template-ci.yml || missing="$missing $job"
 done
 assert_eq "$(echo "$missing" | tr -s ' ')" ""
@@ -159,6 +159,57 @@ assert_file_contains ".github/workflows/template-ci.yml" "bash tests/run.sh"
 it "loop-automation.yml は PR では発火しない"
 # ループ起動は Issue ラベル/手動のみ。PR で回すとコストが読めない
 assert_file_not_contains ".github/workflows/loop-automation.yml" "pull_request:"
+
+# ══════════════════════════════════════════════
+suite "docs: 監視イメージのスモークジョブ（monitor-smoke）"
+# ══════════════════════════════════════════════
+# Issue #20: docker build → 起動 → ヘルス待ち → /api/state 200 → 停止。中身は tests/scripts/monitor-image-smoke.test.sh に置き、
+# CI は手元と同じスクリプトを呼ぶだけにする（lessons #18: CI にだけある検査を作らない）。
+# 構造は YAML パーサで見る（grep の行単位判定を使わない）。PyYAML が無ければスキップではなく FAIL
+
+smoke_job_field() { # <jq 風ではなく python の式。job 辞書を j として評価する>
+  python3 - "$1" <<'PY' 2>/dev/null
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(3)
+doc = yaml.safe_load(open(".github/workflows/template-ci.yml", encoding="utf-8"))
+j = (doc.get("jobs") or {}).get("monitor-smoke")
+if j is None:
+    sys.exit(4)
+steps = j.get("steps") or []
+runs = "\n".join(str(s.get("run", "")) for s in steps if isinstance(s, dict))
+uses = [str(s.get("uses", "")) for s in steps if isinstance(s, dict)]
+cont = [s for s in steps if isinstance(s, dict) and s.get("continue-on-error")]
+env = {"j": j, "runs": runs, "uses": uses, "cont": cont}
+print(eval(sys.argv[1], {"__builtins__": {"any": any, "str": str, "len": len, "isinstance": isinstance, "int": int, "bool": bool}}, env))
+PY
+}
+
+it "PyYAML が使える（無ければ以降の検査が成立しないので FAIL）"
+if python3 -c 'import yaml' 2>/dev/null; then pass; else fail "PyYAML が無い。スキップせず FAIL"; fi
+
+it "monitor-smoke ジョブが存在する"
+assert_eq "$(smoke_job_field '"yes"')" "yes"
+
+it "monitor-smoke は ubuntu で動き、timeout-minutes が設定されている"
+assert_eq "$(smoke_job_field 'str(j.get("runs-on", "")).startswith("ubuntu-") and isinstance(j.get("timeout-minutes"), int)' | tr 'A-Z' 'a-z')" "true"
+
+it "monitor-smoke が actions/checkout を使う"
+assert_eq "$(smoke_job_field 'any(u.startswith("actions/checkout@") for u in uses)')" "True"
+
+it "monitor-smoke が手元と同じスクリプトを呼ぶ（bash tests/run.sh monitor-image-smoke）"
+assert_eq "$(smoke_job_field '"bash tests/run.sh monitor-image-smoke" in runs')" "True"
+
+it "monitor-smoke に continue-on-error がない（失敗を握りつぶさない）"
+assert_eq "$(smoke_job_field 'len(cont) == 0 and not j.get("continue-on-error")')" "True"
+
+it "monitor-smoke の実行に || true などの握りつぶしがない"
+assert_eq "$(smoke_job_field '"|| true" in runs or "||true" in runs')" "False"
+
+it "スモークスクリプト自身が存在する"
+assert_file "tests/scripts/monitor-image-smoke.test.sh"
 
 # ══════════════════════════════════════════════
 suite "docs: CI の外部依存の取得"

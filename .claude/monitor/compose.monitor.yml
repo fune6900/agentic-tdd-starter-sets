@@ -1,0 +1,27 @@
+# 監視サーバの原本。プロジェクト直下から回す:
+#   docker compose -f .claude/monitor/compose.monitor.yml --project-directory . up -d --build
+# 専用ネットワークにするのは、複製・include されても導入先のアプリと同じネットワークに入らないため
+services:
+  monitor:
+    networks: [monitor-net]
+    build:
+      context: ./.claude/monitor
+    ports:
+      # 内外同一ポート（サーバの Host 検査がポート込みのため）。公開は 127.0.0.1 のみ
+      - "127.0.0.1:${LOOP_MONITOR_PORT:-4319}:${LOOP_MONITOR_PORT:-4319}"
+    environment:
+      LOOP_MONITOR_PORT: ${LOOP_MONITOR_PORT:-4319}
+      # コンテナ内は全 IF で listen する（公開の絞りは上の 127.0.0.1 側）
+      MONITOR_BIND: 0.0.0.0
+      MONITOR_DB: /data/monitor.db
+    volumes:
+      - monitor-data:/data
+      - ./.claude/memory:/memory:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+networks:
+  monitor-net: {}
+volumes:
+  monitor-data:

@@ -191,3 +191,14 @@ jobs:
             fi
           done
           exit $rc
+
+  monitor-smoke:
+    name: 監視イメージのスモーク
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ビルド・起動・ヘルス・実挙動・後始末
+        # 手元と同じスクリプト。jq / curl / docker は ubuntu-latest 同梱
+        run: bash tests/run.sh monitor-image-smoke
