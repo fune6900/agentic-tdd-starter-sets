@@ -120,6 +120,31 @@ cleanup_sandboxes() {
   done
 }
 
+# ---------- Docker の前提（スキップせず FAIL させる。lessons #10: 判定不能を合格扱いにしない） ----------
+
+# docker CLI と compose プラグインがあれば 0。無ければ理由を出して 1。デーモンは要らない（config だけなら不要）
+compose_gate() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker が PATH に無い。スキップせず FAIL 扱いにする"
+    return 1
+  fi
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "docker compose（v2 プラグイン）が使えない。スキップせず FAIL 扱いにする"
+    return 1
+  fi
+  return 0
+}
+
+# compose_gate に加えて、デーモンに接続できれば 0（build / run に必要）
+docker_daemon_gate() {
+  compose_gate || return 1
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker デーモンに接続できない。スキップせず FAIL 扱いにする"
+    return 1
+  fi
+  return 0
+}
+
 report() {
   echo
   echo "════════════════════════════════════════"

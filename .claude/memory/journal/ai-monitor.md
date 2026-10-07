@@ -198,3 +198,107 @@ status: active
 - **なぜ**: 後から足した防御を変異対象に入れ忘れていた（lessons #5 の再発として記録）
 - **ゲート**: G1〜G4 PASS。プロダクトの変更は `export` の付与のみでセキュリティ境界に触れないため G5 は起動していない
 - **残課題（低・後続へ）**: `/api/state` の全行導出（#21 のポーリング前に増分導出か上限）、SSE ハートビート、`SessionEnd` 後の状態遷移、WAL/busy_timeout
+
+## 2026-10-04T12:38Z / #20 / start — node:24-alpine（digest 固定）の監視イメージが非 root・ヘルスチェック付きでビルドされ CI でスモークされる
+
+- **やったこと**: #20 に着手。#19 をエピック進捗表で完了に更新。Docker デーモン停止をループ開始前にマスターへ確認し起動してもらった（G2 が Docker 前提のため。インナーループ途中で人間に聞かないよう先に解消）。時間予算は Issue に無いため 180 分（イメージのビルド・CI スモーク・G5 必須）
+- **なぜ**: #19 のサーバを導入先で確実に立てる実体。#24（bootstrap）が原本 compose を複製する前提になる
+- **方針**: Dockerfile は digest 固定の `node:24-alpine`、非 root、HEALTHCHECK は node 自身で `/api/state`。compose 原本は `127.0.0.1` bind・read_only・cap_drop ALL・no-new-privileges・名前付きボリューム・`.claude/memory` をディレクトリ単位で ro。#19 の申し送りを反映: (1) Host 検査がポート込みなのでコンテナの内外ポートを同一にする（`127.0.0.1:${PORT}:${PORT}` とコンテナ内 `LOOP_MONITOR_PORT` を揃える）(2) DB は名前付きボリューム直下の実体パス（直接の親がリンクだと起動拒否）(3) ボリュームの所有者 UID と非 root ユーザーを揃える（既存 DB の chmod が EPERM で起動失敗しうる）
+- **参照した教訓**: #6 digest・パス解決は実値（推測しない、取得日を書く）/ #5 変異テスト（防御を足すたびに対応表へ）/ #15 限界は止まる範囲で / #18 G1 は CI の全段（新しい docker スモーク段も手元で回す）/ #19 Issue のコマンドは実行して確かめる / #11 行き先（ボリューム・マウント）を数える
+
+## 2026-10-04T13:04Z / #20 / impl — 監視イメージ実装完了
+
+- **やったこと**: QA が `tests/scripts/monitor-image.test.sh`（静的・compose 検査 191件、7パターン×22項目＋security.md）・`monitor-image-smoke.test.sh`（ビルド→起動→実挙動→後始末 37件）・docs-consistency（必須ジョブ5件・monitor-smoke 構造）・`lib.sh` の Docker ゲートを作成。Coder が `.claude/monitor/{Dockerfile,.dockerignore,compose.monitor.yml}`、CI に `monitor-smoke` ジョブ、security.md「コンテナ側」を追加
+- **なぜこの設計か**: digest はマニフェストリスト（amd64/arm64 両対応）を `docker buildx imagetools inspect` で 2026-10-04 に実取得。ports は `127.0.0.1:${PORT}:${PORT}` で内外同一（サーバの Host 検査がポート込みのため）。`/data` をイメージ内で作って node に chown（名前付きボリュームが root 所有になると起動できない）。HEALTHCHECK は `node -e` の `http.get`（Node が Host に `127.0.0.1:<port>` を付ける）。`read_only: true` で tmpfs 不要（書き込みは `/data` のみ）。Docker 不在は FAIL（判定不能を合格にしない）
+- **捨てた選択肢**: compose 検査を docs-consistency に置く（docs ジョブに Docker が無い）、`run.sh` でスモークを既定から外す（手元の G1 で CI 段が抜ける＝#18 の再発リスク。tests ジョブとの二重実行は許容）、tmpfs の追加（不要と実測）
+- **変異テスト**: USER 削除→静的1・スモーク12 / digest 削除→静的1 / 127.0.0.1 削除→静的7・スモーク1 / 内外ポートずらし→静的7・スモーク6 / chown 削除→スモーク12（静的では検出不能）/ security.md のコンテナ小節削除→2・語の欠落→1
+- **次**: G1 へ
+
+## 2026-10-04T14:24Z / #20 / halt — 同一ゲート G2 の2連続 FAIL で停止
+
+- **やったこと**: retry 2 / G2 で停止。実装（Dockerfile・.dockerignore・compose 原本・CI の monitor-smoke ジョブ）は G1 と G2 の実挙動1〜7で全 PASS。落ちているのは security.md「コンテナ側」の `docker run` に関する記述だけ
+- **各リトライで変えたこと**: retry 1（G1）: テストの多バイト隣接 `$drop` を `${drop}` に（lessons #5 の5回目）。retry 2（G2）: security.md の記述2点（wget は busybox で存在／`docker run -p` だけでは公開されない）を実測で書き直した
+- **推定原因**: 確定。retry 2 の書き直しで `docker run -e MONITOR_BIND=0.0.0.0 -e LOOP_MONITOR_PORT=<p> -p 127.0.0.1:<p>:<p>` なら到達できると書いたが、`MONITOR_DB` を渡さないとサーバは既定の `/app/data`（root 所有）に書こうとして起動失敗する。Coder の実測は `MONITOR_DB` 付きで行われたと推定（未確認）、文書には書き漏れた。MONITOR_BIND なしで到達不能な理由も bind ではなく起動失敗だった。修正は文言1箇所（例に `-e MONITOR_DB=/data/monitor.db` を足す）または Dockerfile に `ENV MONITOR_DB=/data/monitor.db`
+- **成果物の状態**: 全て未コミット（ガードがコミットをブロック）。G3〜G5 は未実行
+- **次**: マスターの判断待ち
+
+## 2026-10-04T15:25Z / #20 / impl — マスター指示 B: ENV MONITOR_DB と文書の例の機械検証
+
+- **やったこと**: QA が静的（`ENV MONITOR_DB` が `/data` 配下・`ENV MONITOR_BIND` が無い）とスモーク「素の docker run」（DB・BIND なしで healthy だがホスト到達不能／BIND 付きでホストから 200／外側ポートずれで 403）、security.md のコードブロックを抽出して文字列そのままで実行するテストを追加（Red 9件）。Coder が Dockerfile に `ENV MONITOR_DB=/data/monitor.db`、security.md「コンテナ側」を実挙動に合わせて書き直し、例を列0の ```sh ブロックに
+- **なぜ**: 前回の停止原因は「文書の例を、実測で使った引数込みで書かなかった」こと。文章で気をつけるのではなく、文書の例を抽出して実行するテストで機械的に守る形にした。`MONITOR_DB` をイメージ既定にして `docker run` の罠を1つ消した（マスター決定 B）。`MONITOR_BIND` は既定ループバックのまま＝公開範囲は広げない
+- **捨てた選択肢**: 文言だけ直す案 A（同じ罠が残る）、`ENV MONITOR_BIND=0.0.0.0` をイメージ既定にする案（`docker run -p` が全 IF 公開に直結する）
+- **変異テスト**: `ENV MONITOR_DB` 除去→静的1・スモーク8 / 文書の例から `MONITOR_BIND=0.0.0.0` 除去→文書抽出テスト1
+- **次**: G1 から
+
+## 2026-10-04T15:38Z / #20 / gates — 再開後のゲート一巡（G5 FAIL）
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ✅ / G4 ✅ / G5 ❌
+- **落ちた内容**: G5 中1件。compose がネットワークを指定せず default に入るため、#24 で原本を複製・include すると導入先のアプリと同居し、同じネットワークのコンテナから Host を `127.0.0.1:<port>` に偽れば `/api/state` が 200・POST が検証まで通る（PoC 実測）。security.md は「ローカル限定」「bind だけで担保」と言い切っていた（lessons #15 の再発）
+- **差し戻し先**: テスト → QA（`docker compose config` でネットワークを確かめる静的テストと変異）、実装と文書 → Coder（専用ネットワーク・security.md の言い換え・Engine 28.0 より前の L2 経路を限界に・`.dockerignore` に env 系ファイルの除外）
+- **なぜ**: 127.0.0.1 bind はホストのネットワーク側しか絞らない。コンテナ間の直接通信は別の層。Host 検査はブラウザ経由の DNS rebinding 対策で、認証ではない
+- **G3 の申し送り（記録のみ）**: FROM/USER 検査は docs ジョブではなく tests ジョブの `monitor-image.test.sh` に置いた（docs ジョブに Docker が無いため）。影響範囲外の `tests/scripts/lib.sh` と新規テスト2本は受け入れ条件のテスト実体として追加。`/memory` の契約はエピックの Issue 6 に追記済み
+
+## 2026-10-04T16:03Z / #20 / halt — リトライ上限（3/3）で停止
+
+- **やったこと**: マスター指示 B で再開後、retry 3 の記録時点でリトライ上限に到達。修正には着手していない
+- **各リトライで変えたこと（再開後）**: retry 1（再開時）: Dockerfile に `ENV MONITOR_DB`、security.md の docker run 例を抽出実行するテスト。retry 2（G5）: compose を専用ネットワーク `monitor-net` に、security.md にコンテナ間到達の限界、dockerignore に env 系除外。retry 3（G2）: その env 系除外がコンテキスト直下にしか効かず、`server/` 配下の env 系ファイルがイメージに入る（実測）
+- **推定原因**: 確定。dockerignore のパターンはコンテキスト直下基準で、サブディレクトリには `**/` が要る（Docker の仕様）。修正は1行（`**/` 付きに）とテストにサブディレクトリの囮を足すだけ。同じ修正の繰り返しではない（毎回別の指摘）
+- **G2 で他に確認できたこと**: 専用ネットワークで導入先アプリからの到達は不可・`docker network connect` で同居すれば到達（記述どおり）、`internal: true` だとホストから届かない（記述どおり）、文書の docker run 例は逐語実行で 200
+- **#24 への申し送り**: `include` で取り込む場合は `project_directory: .` が必要（無いと build context が `.claude/monitor/.claude/monitor` になり失敗。G2 実測）
+- **成果物の状態**: 全て未コミット。G3〜G5 は再開後の retry 2 以降未実行
+- **次**: マスターの判断待ち
+
+## 2026-10-04T22:28Z / #20 / impl — 上限なし再開: dockerignore を全階層に
+
+- **やったこと**: QA がスモークの囮を直下・`server/`・`server/sub/deeper/` の6箇所に置き、静的検査を `**/` 付きのみ通す形に（Red 2件）。Coder が dockerignore の env 系除外を `**/` 付きに置換
+- **なぜ**: dockerignore のパターンはコンテキスト直下基準。`COPY server ./server` で取り込まれる配下には `**/` が要る（G2 実測）
+- **変異テスト**: `**/` を外す→静的1・スモーク1 FAIL
+- **次**: G1 から一巡（再開後の retry 2 以降、G3〜G5 は未実行）
+
+## 2026-10-05T22:34Z / #20 / gates — 上限なし再開後のゲート一巡（G5 FAIL）
+
+- **結果**: G1 ✅ / G2 ✅（囮は Tech Lead が Write で用意。Tester に Write が無く一度未実証で fail 記録）/ G3 ✅ / G4 ✅（中2件はテストの Refactor で解消、G1 再実行 ✅）/ G5 ❌
+- **落ちた内容**: G5 中1件。専用ネットワークで止まるのはコンテナ間の直接通信だけ。Docker Desktop では別ネットワークのコンテナからも `host.docker.internal:<port>` に Host を偽れば `/api/state` 200・POST が検証まで到達（実測）。security.md は「別ネットワークは届かない」と読める書き方だった（lessons #15 の3回目）
+- **判断**: G5 は (a) 文書に限界を明記 か (b) 共有トークンによる認証 を人間の判断としたが、エピック承認時のマスター決定「受信サーバは認証を持たない」に沿って (a) を採用。(b) は前提を変えるので別 Issue 候補としてマスターに報告する
+- **差し戻し先**: テスト → QA（host.docker.internal 経由の到達を固定する実測テスト、文書抽出コマンドの許可形照合）、文書と dockerignore → Coder（限界の明記、dockerignore を許可リスト方式に）
+
+## 2026-10-05T22:47Z / #20 / impl — G5 差し戻し: host.docker.internal 経路の明記と多層防御
+
+- **やったこと**: QA が別ネットワークからの到達スイート（Host 偽装なし 403／ありで Docker Desktop 200 を実測、Linux は観測値の出力と文書との矛盾検査）・秘密鍵系の囮・文書抽出コマンドの許可形照合を追加（Red 4件）。Coder が dockerignore を許可リスト方式（全除外→`!server`→秘密パターン）に、security.md に `host.docker.internal` 経路の項を追加
+- **なぜ**: 専用ネットワークで止まるのはコンテナ間の直接通信だけ。ホストを経由する経路は認証が無い以上止まらない。受信に認証を持たないのはエピック承認時のマスター決定なので、限界として明記し、文書と実測のずれをテストで検知する形にした
+- **捨てた選択肢**: 共有トークンによる認証（前提変更。別 Issue 候補としてマスターに報告）、Linux の期待値をテストに書く（未実測のため推測になる）
+- **変異テスト**: `**/*.pem` 除去→1 / `!server` を後置→1 / 文書に「Docker Desktop では到達できない」→1
+- **次**: G1 から
+
+## 2026-10-06T23:10Z / #20 / gates — retry 2 後のゲート一巡（全 PASS）
+
+- **結果**: G1 ✅ / G2 ✅ / G3 ✅（エージェントは記録後に無応答で打ち切り。所見の論点のうち #21 への影響は Tech Lead がエピックに追記）/ G4 ✅（中1件 `di_allowlist_ok` のフラグ未リセットは Refactor で解消し G1 再実行 ✅）/ G5 ✅
+- **G5**: 前回の指摘は「止まる範囲」として正しく文書化された（PoC 再実行で記述どおり）。(a) 採用・(b) 範囲外の判断も妥当。低2件: 許可リストでも `server/` 配下の `*.p12`・`.npmrc`・`*.db` 等は除外しない／文書抽出コマンドの `-e` の変数名を許可リスト化していない（任意コード実行には届かない、実測）
+- **マスターへの報告事項**: Docker Desktop では端末上の任意のコンテナが、ネットワークに関係なく Host を偽るだけで監視サーバを読み、イベントを注入できる（実測）。共有トークンによる認証は別 Issue 候補
+
+## 2026-10-06T23:13Z / #20 / done — #20 完了（PR #30）
+
+- **やったこと**: PR #30 を作成。全ゲート PASS（ハードストップ2回、いずれもマスター指示で再開）
+- **なぜ**: 最終的に効いたのは、(1) `ENV MONITOR_DB` で素の docker run の罠を消したこと、(2) 文書の例を抽出して実行・観測値と突き合わせるテストで文書のずれを機械化したこと、(3) dockerignore の許可リスト化、(4) ネットワークの「止まる範囲」を層ごとに実測して書き分けたこと
+- **残課題**: Docker Desktop では任意のコンテナが Host 偽装で監視サーバを読み書きできる（認証なしの限界。共有トークンは別 Issue 候補としてマスター判断待ち）。低: 許可リストでも server/ 配下の p12・npmrc・db は除外しない、抽出コマンドの -e 変数名の許可リスト化、claim_consistent の部分一致依存
+- **次**: #21（ビュー）。dockerignore に静的ファイルの `!` と Dockerfile の COPY が要る、相対 URL・file_path のエスケープ・Stop 由来の待機（エピック Issue 5 に追記済み）。#24 は include 時 `project_directory: .` 必須（エピック Issue 8 に追記済み）
+
+## 2026-10-07T00:13Z / #20 / start — PR #30 レビュー指摘（中）: CI のスモーク二重実行を解消
+
+- **やること**: `tests` ジョブの `bash tests/run.sh` と専用 `monitor-smoke` ジョブでスモークが二重に走る（docker build 2回）。マスター指示 A で tests ジョブから外す
+- **方針**: `run.sh` に除外用の環境変数（スイート名の完全一致、`case` で検証）を足し、CI の tests ジョブだけが使う。手元の `bash tests/run.sh` は従来どおり全件（スモーク込み）なので、G1 が CI の段を漏らさない（lessons: G1 は CI の全段を回す）。docs-consistency で「除外したスイートは専用ジョブで必ず走る」ことを検査し、除外が穴にならないようにする
+- **参照した教訓**: #18 G1 は CI の全段 / #10 検証は case、判定不能を合格にしない / #5 変異テスト
+
+## 2026-10-07T00:19Z / #20 / impl — CI のスモーク二重実行を解消
+
+- **やったこと**: QA が `tests/scripts/run-sh.test.sh`（新規 34件）と docs-consistency の新 suite（除外したスイートが別ジョブで必ず走ること）を作成（Red 33件）。Coder が `tests/run.sh` に `RUN_EXCLUDE`（完全一致・存在しない名前と不正値は実行前に FAIL）、CI の tests ジョブを `RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh` に
+- **なぜ**: 手元の `bash tests/run.sh` は従来どおり全件（スモーク込み）のままにし、CI の tests ジョブだけが外す。除外が穴にならないよう、除外したスイートが別ジョブで実行されていることを docs-consistency で機械的に守る。存在しない名前（タイプミス）を FAIL にするのは、除外が効かないまま誰も気付かない状態を作らないため（lessons #10）
+- **変異テスト**: 部分一致化→13 / 存在検証の除去→13 / CI の RUN_EXCLUDE 除去→10（FAIL 行数）
+- **次**: G1 から
+
+## 2026-10-07T00:36Z / #20 / done — PR #30 レビュー指摘（中）対応完了: スモークの二重実行を解消
+
+- **やったこと**: `tests/run.sh` に `RUN_EXCLUDE`（完全一致・存在しない名前と不正値は実行前に FAIL）、CI の tests ジョブだけがスモークを除外、docs-consistency で除外したスイートが別ジョブで必ず実行されることを検査。G1〜G4 PASS（G4 中: 検査用 python の失敗を `2>/dev/null` で握りつぶし空出力＝PASS になる穴を Refactor で解消、G1 再実行 PASS）
+- **G5**: 起動していない。変更はテスト基盤と CI の段の組み替えだけで、プロダクトのセキュリティ境界・依存・外部入力に触れない
+- **残課題（低）**: 穴検査は専用ジョブの `if:`・`continue-on-error` を見ない、専用ジョブは run.sh の部分一致フィルタで走る（現状の名前では問題なし）、`ci_exclusion_problems` の必須除外名がハードコード
+- **次**: push して CI 確認 → マージ
