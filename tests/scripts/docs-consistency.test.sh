@@ -212,6 +212,165 @@ it "スモークスクリプト自身が存在する"
 assert_file "tests/scripts/monitor-image-smoke.test.sh"
 
 # ══════════════════════════════════════════════
+suite "docs: tests ジョブのスモーク除外（二重実行の解消。穴にしない）"
+# ══════════════════════════════════════════════
+# Issue #20 / PR #30: tests ジョブの全件実行が monitor-image-smoke を含み、monitor-smoke と二重に走っていた。
+# tests ジョブは RUN_EXCLUDE=monitor-image-smoke で外す。ただし除外は「誰も走らせない」穴になりうる。
+# 除外した全スイートが別ジョブで `bash tests/run.sh <名前>` として走っていることまで構造で固定する。
+
+# ci_exclusion_problems <yaml パス>  → 問題を1行ずつ出力。出力が空なら健全。
+#   no-tests-job / no-full-run / not-excluded:monitor-image-smoke / hole:<名前>
+#   no-run-exclude / excluded-outside-tests:<ジョブ名> / python-failed:<rc>
+#   python が落ちたら python-failed を必ず出す（判定不能を合格にしない）。
+ci_exclusion_problems() {
+  local out rc tmp
+  tmp="$(mktemp)" || { echo "python-failed:mktemp"; return; }
+  python3 - "$1" > "$tmp" 2>&1 <<'PY'
+import re, sys
+try:
+    import yaml
+except ImportError:
+    print("no-pyyaml"); sys.exit(0)
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+jobs = doc.get("jobs") or {}
+RUN = re.compile(r'^(?P<pre>(?:\w+=(?:\'[^\']*\'|"[^"]*"|\S*)\s+)*)bash\s+tests/run\.sh(?P<args>(?:\s+\S+)*)\s*$')
+
+def run_lines(job):
+    out = []
+    for s in (job.get("steps") or []):
+        if isinstance(s, dict):
+            for ln in str(s.get("run", "")).splitlines():
+                out.append(ln.strip())
+    return out
+
+def parse(ln):
+    m = RUN.match(ln)
+    if not m:
+        return None
+    excl = []
+    for kv in re.finditer(r'(\w+)=(\'[^\']*\'|"[^"]*"|\S*)', m.group("pre")):
+        if kv.group(1) == "RUN_EXCLUDE":
+            excl = kv.group(2).strip("'\"").split()
+    return excl, m.group("args").split()
+
+tests = jobs.get("tests")
+if tests is None:
+    print("no-tests-job"); sys.exit(0)
+if not any("RUN_EXCLUDE" in l for l in run_lines(tests)):
+    print("no-run-exclude")
+for jn, job in jobs.items():
+    if jn != "tests" and isinstance(job, dict) and any("RUN_EXCLUDE" in l for l in run_lines(job)):
+        print("excluded-outside-tests:" + jn)
+full = [parse(l) for l in run_lines(tests)]
+full = [p for p in full if p is not None and p[1] == []]
+if not full:
+    print("no-full-run"); sys.exit(0)
+excluded = set()
+for excl, _ in full:
+    excluded.update(excl)
+if "monitor-image-smoke" not in excluded:
+    print("not-excluded:monitor-image-smoke")
+for name in sorted(excluded):
+    covered = False
+    for jn, job in jobs.items():
+        if jn == "tests" or not isinstance(job, dict):
+            continue
+        for l in run_lines(job):
+            p = parse(l)
+            if p and p[1] == [name] and name not in p[0]:
+                covered = True
+    if not covered:
+        print("hole:" + name)
+PY
+  rc=$?
+  out="$(cat "$tmp")"; rm -f "$tmp"
+  if [ "$rc" -ne 0 ]; then echo "python-failed:$rc"; fi
+  if [ -n "$out" ]; then echo "$out"; fi
+}
+
+# ci_problems_of <yaml> <ERE>  → 該当する問題行。python-failed は常に含める（素通り防止）。
+ci_problems_of() {
+  ci_exclusion_problems "$1" | grep -E -e '^python-failed' -e "$2" || true
+}
+
+CI_YML=".github/workflows/template-ci.yml"
+DIAG_MISSING_YML="/nonexistent/ci-$$.yml"
+
+it "PyYAML が使える（除外の検査が成立する前提）"
+if python3 -c 'import yaml' 2>/dev/null; then pass; else fail "PyYAML が無い。スキップせず FAIL"; fi
+
+it "tests ジョブの全件実行が monitor-image-smoke を RUN_EXCLUDE で除外している"
+assert_eq "$(ci_problems_of "$CI_YML" '^(not-excluded:|no-full-run|no-tests-job)')" ""
+
+it "除外した全スイートが別ジョブで bash tests/run.sh <スイート> として走っている（穴が無い）"
+assert_eq "$(ci_exclusion_problems "$CI_YML")" ""
+
+it "tests ジョブに RUN_EXCLUDE の記述が実在する（検査が素通りしていない確認）"
+assert_eq "$(ci_problems_of "$CI_YML" '^no-run-exclude')" ""
+
+it "monitor-smoke ジョブが従来どおり存在し、monitor-image-smoke だけを走らせる"
+assert_eq "$(smoke_job_field '"bash tests/run.sh monitor-image-smoke" in runs')" "True"
+
+it "tests ジョブ以外の run 段で RUN_EXCLUDE を使っていない（専用ジョブで除外が効かなくなる事故を防ぐ）"
+assert_eq "$(ci_problems_of "$CI_YML" '^excluded-outside-tests:')" ""
+
+it "検査器は python が落ちたら python-failed を出す（存在しない YAML パス）"
+assert_contains "$(ci_exclusion_problems "$DIAG_MISSING_YML")" "python-failed:"
+
+it "python 失敗時は各検査が空にならず FAIL になる（素通りしない）"
+assert_contains "$(ci_problems_of "$DIAG_MISSING_YML" '^excluded-outside-tests:')" "python-failed:"
+
+# ---------- 自己診断: 検査器が壊れた CI を FAIL にできること（合成 YAML） ----------
+DIAG="$(mktemp -d)" || exit 1
+SANDBOXES+=("$DIAG")
+trap cleanup_sandboxes EXIT
+
+diag_yaml() { # <名前> <tests ジョブの run> <別ジョブの run>
+  cat > "$DIAG/$1.yml" <<YML
+jobs:
+  tests:
+    steps:
+      - run: $2
+  other:
+    steps:
+      - run: $3
+YML
+}
+
+diag_yaml good       "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh" "bash tests/run.sh monitor-image-smoke"
+diag_yaml no-job     "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh" "echo nothing"
+diag_yaml partial    "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh" "bash tests/run.sh monitor-image"
+diag_yaml self-excl  "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh" "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh monitor-image-smoke"
+diag_yaml no-exclude "bash tests/run.sh" "bash tests/run.sh monitor-image-smoke"
+diag_yaml other-excl "RUN_EXCLUDE=docs-consistency bash tests/run.sh" "bash tests/run.sh docs-consistency"
+diag_yaml outside   "RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh" "RUN_EXCLUDE=docs-consistency bash tests/run.sh monitor-image-smoke"
+diag_yaml hole2      "RUN_EXCLUDE='monitor-image-smoke bash-lint' bash tests/run.sh" "bash tests/run.sh monitor-image-smoke"
+
+it "自己診断: 正しい CI は問題なし"
+assert_eq "$(ci_exclusion_problems "$DIAG/good.yml")" ""
+
+it "自己診断: 専用ジョブが無い除外は hole として検出する"
+assert_eq "$(ci_exclusion_problems "$DIAG/no-job.yml")" "hole:monitor-image-smoke"
+
+it "自己診断: 専用ジョブが部分一致の名前（monitor-image）では hole として検出する"
+assert_eq "$(ci_exclusion_problems "$DIAG/partial.yml")" "hole:monitor-image-smoke"
+
+it "自己診断: 専用ジョブ自身が同じスイートを除外していれば hole として検出する"
+assert_contains "$(ci_exclusion_problems "$DIAG/self-excl.yml")" "hole:monitor-image-smoke"
+
+it "自己診断: tests ジョブが何も除外していなければ検出する"
+assert_contains "$(ci_exclusion_problems "$DIAG/no-exclude.yml")" "not-excluded:monitor-image-smoke"
+
+it "自己診断: 別スイートを除外していても monitor-image-smoke の未除外は検出する"
+assert_contains "$(ci_exclusion_problems "$DIAG/other-excl.yml")" "not-excluded:monitor-image-smoke"
+
+it "自己診断: tests 以外のジョブで RUN_EXCLUDE を使えば検出する"
+assert_contains "$(ci_exclusion_problems "$DIAG/outside.yml")" "excluded-outside-tests:other"
+
+it "自己診断: 複数除外のうち片方だけ専用ジョブがあれば残りを hole として検出する"
+assert_eq "$(ci_exclusion_problems "$DIAG/hole2.yml")" "hole:bash-lint"
+
+# ══════════════════════════════════════════════
 suite "docs: CI の外部依存の取得"
 # ══════════════════════════════════════════════
 # タグ固定だけでは足りない。GitHub Releases のアセットは同じタグのまま差し替えられる。

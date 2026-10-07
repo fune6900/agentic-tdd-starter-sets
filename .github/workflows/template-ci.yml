@@ -96,7 +96,7 @@ jobs:
           "$HOME/.local/bin/actionlint" --version
 
       - name: テスト実行
-        run: bash tests/run.sh
+        run: RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh
 
   docs:
     name: ドキュメントと実体の整合
