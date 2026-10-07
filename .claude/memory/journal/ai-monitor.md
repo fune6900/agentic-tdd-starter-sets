@@ -282,3 +282,23 @@ status: active
 - **なぜ**: 最終的に効いたのは、(1) `ENV MONITOR_DB` で素の docker run の罠を消したこと、(2) 文書の例を抽出して実行・観測値と突き合わせるテストで文書のずれを機械化したこと、(3) dockerignore の許可リスト化、(4) ネットワークの「止まる範囲」を層ごとに実測して書き分けたこと
 - **残課題**: Docker Desktop では任意のコンテナが Host 偽装で監視サーバを読み書きできる（認証なしの限界。共有トークンは別 Issue 候補としてマスター判断待ち）。低: 許可リストでも server/ 配下の p12・npmrc・db は除外しない、抽出コマンドの -e 変数名の許可リスト化、claim_consistent の部分一致依存
 - **次**: #21（ビュー）。dockerignore に静的ファイルの `!` と Dockerfile の COPY が要る、相対 URL・file_path のエスケープ・Stop 由来の待機（エピック Issue 5 に追記済み）。#24 は include 時 `project_directory: .` 必須（エピック Issue 8 に追記済み）
+
+## 2026-10-07T00:13Z / #20 / start — PR #30 レビュー指摘（中）: CI のスモーク二重実行を解消
+
+- **やること**: `tests` ジョブの `bash tests/run.sh` と専用 `monitor-smoke` ジョブでスモークが二重に走る（docker build 2回）。マスター指示 A で tests ジョブから外す
+- **方針**: `run.sh` に除外用の環境変数（スイート名の完全一致、`case` で検証）を足し、CI の tests ジョブだけが使う。手元の `bash tests/run.sh` は従来どおり全件（スモーク込み）なので、G1 が CI の段を漏らさない（lessons: G1 は CI の全段を回す）。docs-consistency で「除外したスイートは専用ジョブで必ず走る」ことを検査し、除外が穴にならないようにする
+- **参照した教訓**: #18 G1 は CI の全段 / #10 検証は case、判定不能を合格にしない / #5 変異テスト
+
+## 2026-10-07T00:19Z / #20 / impl — CI のスモーク二重実行を解消
+
+- **やったこと**: QA が `tests/scripts/run-sh.test.sh`（新規 34件）と docs-consistency の新 suite（除外したスイートが別ジョブで必ず走ること）を作成（Red 33件）。Coder が `tests/run.sh` に `RUN_EXCLUDE`（完全一致・存在しない名前と不正値は実行前に FAIL）、CI の tests ジョブを `RUN_EXCLUDE=monitor-image-smoke bash tests/run.sh` に
+- **なぜ**: 手元の `bash tests/run.sh` は従来どおり全件（スモーク込み）のままにし、CI の tests ジョブだけが外す。除外が穴にならないよう、除外したスイートが別ジョブで実行されていることを docs-consistency で機械的に守る。存在しない名前（タイプミス）を FAIL にするのは、除外が効かないまま誰も気付かない状態を作らないため（lessons #10）
+- **変異テスト**: 部分一致化→13 / 存在検証の除去→13 / CI の RUN_EXCLUDE 除去→10（FAIL 行数）
+- **次**: G1 から
+
+## 2026-10-07T00:36Z / #20 / done — PR #30 レビュー指摘（中）対応完了: スモークの二重実行を解消
+
+- **やったこと**: `tests/run.sh` に `RUN_EXCLUDE`（完全一致・存在しない名前と不正値は実行前に FAIL）、CI の tests ジョブだけがスモークを除外、docs-consistency で除外したスイートが別ジョブで必ず実行されることを検査。G1〜G4 PASS（G4 中: 検査用 python の失敗を `2>/dev/null` で握りつぶし空出力＝PASS になる穴を Refactor で解消、G1 再実行 PASS）
+- **G5**: 起動していない。変更はテスト基盤と CI の段の組み替えだけで、プロダクトのセキュリティ境界・依存・外部入力に触れない
+- **残課題（低）**: 穴検査は専用ジョブの `if:`・`continue-on-error` を見ない、専用ジョブは run.sh の部分一致フィルタで走る（現状の名前では問題なし）、`ci_exclusion_problems` の必須除外名がハードコード
+- **次**: push して CI 確認 → マージ
