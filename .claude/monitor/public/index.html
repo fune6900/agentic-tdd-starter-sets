@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Claude Code モニター</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+<h1>Claude Code モニター</h1>
+<p id="connection-status" data-testid="connection-status">接続中</p>
+</header>
+<main>
+<section id="sessions-section" data-testid="sessions-section">
+<h2>セッション一覧</h2>
+<table id="sessions" data-testid="sessions">
+<thead><tr><th>セッション</th><th>状態</th><th>最終受信(UTC)</th></tr></thead>
+<tbody id="sessions-body" data-testid="sessions-body"></tbody>
+</table>
+<p id="sessions-empty" data-testid="sessions-empty">セッションはまだありません</p>
+</section>
+<section id="tree-section" data-testid="tree-section">
+<h2>エージェント木</h2>
+<div id="trees" data-testid="trees"></div>
+</section>
+<section id="timeline-section" data-testid="timeline-section">
+<h2>イベント時系列</h2>
+<table id="timeline" data-testid="timeline">
+<thead><tr><th>時刻(UTC)</th><th>セッション</th><th>エージェント</th><th>イベント</th><th>ツール</th><th>詳細</th></tr></thead>
+<tbody id="timeline-body" data-testid="timeline-body"></tbody>
+</table>
+</section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -362,13 +362,13 @@ di_ignores_env() { # <内容>
   [ "$glob" -eq 0 ] || { [ "$plain" -eq 0 ] && [ "$dot" -eq 0 ]; }
 }
 
-# .dockerignore が許可リスト方式: 先頭の有効行が *（全除外）、続いて !server で戻し、その後ろに秘密パターンの除外を並べる。
+# .dockerignore が許可リスト方式: 先頭の有効行が *（全除外）、続いて !server と !public（Issue #21: ビューの静的ファイル。両方必須）で戻し、その後ろに秘密パターンの除外を並べる。
 # Docker は最後に一致した行が勝つので、秘密パターンは !server より後ろに置かないと server/ 配下の秘密が戻ってしまう（順序を検査）。
 # !server が複数回出たら状態を全てリセットする（秘密パターンの後に !server が戻ると、その秘密が戻るため。最後の !server より後ろだけを数える）。
-# 要求する行: **/.env*（または **/.env と **/.env.*）・**/*.pem・**/*.key・**/id_*。!server 以外の否定（!）は許さない。
+# 要求する行: **/.env*（または **/.env と **/.env.*）・**/*.pem・**/*.key・**/id_*。!server / !public 以外の否定（!）は許さない。
 # 文法の近似で弱い。実効はスモークの囮（env 系・*.pem・*.key・id_*）が本体
 di_allowlist_ok() { # <内容>
-  local line first=1 seen_back=0 after="" ok_first=1 neg_other=0 pem=1 key=1 idr=1
+  local line first=1 seen_back=0 seen_pub=0 after="" ok_first=1 neg_other=0 pem=1 key=1 idr=1
   while IFS= read -r line; do
     line="${line%$'\r'}"
     line="${line#"${line%%[![:space:]]*}"}"
@@ -381,9 +381,10 @@ di_allowlist_ok() { # <内容>
     fi
     case "$line" in
       '!server'|'!server/'|'!server/**') seen_back=1; after=""; pem=1; key=1; idr=1; continue ;;
+      '!public'|'!public/'|'!public/**') seen_pub=1; after=""; pem=1; key=1; idr=1; continue ;;
       '!'*) neg_other=1 ;;
     esac
-    if [ "$seen_back" -eq 1 ]; then
+    if [ "$seen_back" -eq 1 ] || [ "$seen_pub" -eq 1 ]; then
       after="${after}${line}"$'\n'
       case "$line" in
         '**/*.pem') pem=0 ;;
@@ -392,7 +393,7 @@ di_allowlist_ok() { # <内容>
       esac
     fi
   done <<< "$1"
-  [ "$ok_first" -eq 0 ] && [ "$seen_back" -eq 1 ] && [ "$neg_other" -eq 0 ] && [ "$pem" -eq 0 ] && [ "$key" -eq 0 ] && [ "$idr" -eq 0 ] \
+  [ "$ok_first" -eq 0 ] && [ "$seen_back" -eq 1 ] && [ "$seen_pub" -eq 1 ] && [ "$neg_other" -eq 0 ] && [ "$pem" -eq 0 ] && [ "$key" -eq 0 ] && [ "$idr" -eq 0 ] \
     && di_ignores_env "$after"
 }
 
@@ -715,6 +716,18 @@ if [ -n "$DF" ] && df_db_env_ok "$DF"; then pass; else fail "ENV MONITOR_DB: '$(
 it "ENV MONITOR_BIND が無い（イメージ既定は 127.0.0.1 listen のまま。公開範囲を広げない）"
 if [ -n "$DF" ] && df_no_bind_env "$DF"; then pass; else fail "ENV MONITOR_BIND がある: '$(df_env_value "$DF" MONITOR_BIND)'"; fi
 
+it "Dockerfile が public/ を COPY する（Issue #21: ビューの静的ファイルがイメージに入る。.dockerignore の !public と対）"
+df_copies_public() { # <内容>
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      "COPY public ./public"|"COPY public /app/public"|"COPY public public"|"COPY public ./public/"|"COPY public/ ./public/") return 0 ;;
+    esac
+  done <<< "$1"
+  return 1
+}
+if [ -n "$DF" ] && df_copies_public "$DF"; then pass; else fail "COPY public ./public が無い"; fi
+
 # ══════════════════════════════════════════════
 suite "monitor-image: .dockerignore / compose 原本の存在"
 # ══════════════════════════════════════════════
@@ -726,31 +739,36 @@ if [ -f "$DOCKERIGNORE" ] && [ ! -L "$DOCKERIGNORE" ] && [ -s "$DOCKERIGNORE" ];
 it ".dockerignore が .env 系を全階層で除外する（**/.env* または **/.env と **/.env.*。否定で戻さない）"
 if [ -f "$DOCKERIGNORE" ] && di_ignores_env "$(cat "$DOCKERIGNORE")"; then pass; else fail "$DOCKERIGNORE に .env* が無い、または否定で戻している"; fi
 
-it "[自己診断] di_allowlist_ok: 許可リスト（* → !server → 秘密パターン）だけを通し、順序違い・否定の追加・パターン欠落は拒否する"
+it "[自己診断] di_allowlist_ok: 許可リスト（* → !server と !public → 秘密パターン）だけを通し、順序違い・否定の追加・パターン欠落は拒否する"
 selfdiag_allowlist() {
-  local good=$'*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n'
+  local good=$'*\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n'
   di_allowlist_ok "$good" || { echo "正しい形が拒否された"; return 1; }
-  di_allowlist_ok $'# c\n*\n\n!server\n**/.env\n**/.env.*\n**/*.pem\n**/*.key\n**/id_*' || { echo "env の2行形が拒否された"; return 1; }
-  di_allowlist_ok $'*\r\n!server\r\n**/.env*\r\n**/*.pem\r\n**/*.key\r\n**/id_*\r\n' || { echo "CRLF が拒否された"; return 1; }
+  di_allowlist_ok $'# c\n*\n\n!server\n!public\n**/.env\n**/.env.*\n**/*.pem\n**/*.key\n**/id_*' || { echo "env の2行形が拒否された"; return 1; }
+  di_allowlist_ok $'*\r\n!server\r\n!public\r\n**/.env*\r\n**/*.pem\r\n**/*.key\r\n**/id_*\r\n' || { echo "CRLF が拒否された"; return 1; }
   di_allowlist_ok $'test\ndocs\ndata\n**/.env*' && { echo "旧形式（許可リストでない）が通った"; return 1; }
-  di_allowlist_ok $'test\n*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "先頭が * でないのが通った"; return 1; }
+  di_allowlist_ok $'test\n*\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "先頭が * でないのが通った"; return 1; }
   di_allowlist_ok $'*\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "!server が無いのが通った"; return 1; }
-  di_allowlist_ok $'*\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server' && { echo "秘密パターンが !server より前（戻されてしまう）が通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/*.pem\n**/*.key\n**/id_*' && { echo "env 系が無いのが通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.key\n**/id_*' && { echo "*.pem が無いのが通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/id_*' && { echo "*.key が無いのが通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/*.key' && { echo "id_* が無いのが通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n!test\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "!server 以外の否定が通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server/.env' && { echo "env を戻す否定が通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "直下だけの env パターンが通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server\n**/.env*' && { echo "秘密パターンの後に再び !server（秘密が戻る）が通った"; return 1; }
-  di_allowlist_ok $'*\n!server\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' || { echo "!server の連続（秘密パターンは後ろ）が拒否された"; return 1; }
+  di_allowlist_ok $'*\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server\n!public' && { echo "秘密パターンが !server より前（戻されてしまう）が通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/*.pem\n**/*.key\n**/id_*' && { echo "env 系が無いのが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/.env*\n**/*.key\n**/id_*' && { echo "*.pem が無いのが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/.env*\n**/*.pem\n**/id_*' && { echo "*.key が無いのが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key' && { echo "id_* が無いのが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n!test\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "!server 以外の否定が通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server/.env' && { echo "env を戻す否定が通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "直下だけの env パターンが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!server\n!public\n**/.env*' && { echo "秘密パターンの後に再び !server（秘密が戻る）が通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n!server\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' || { echo "!server の連続（秘密パターンは後ろ）が拒否された"; return 1; }
+  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "!public が無いのが通った"; return 1; }
+  di_allowlist_ok $'*\n!public\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "!server が無い（!public のみ）のが通った"; return 1; }
+  di_allowlist_ok $'*\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*\n!public' && { echo "秘密パターンが !public より前（public/ 配下の秘密が戻る）が通った"; return 1; }
+  di_allowlist_ok $'*\n!public\n!server\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' || { echo "!public が先の順が拒否された"; return 1; }
+  di_allowlist_ok $'*\n!server\n!public\n!public/.env\n**/.env*\n**/*.pem\n**/*.key\n**/id_*' && { echo "public の秘密を戻す否定が通った"; return 1; }
   di_allowlist_ok "" && { echo "空が通った"; return 1; }
   return 0
 }
 assert_ok selfdiag_allowlist
 
-it ".dockerignore が許可リスト方式（* で全除外 → !server で戻す → その後ろで env 系・*.pem・*.key・id_* を除外）"
+it ".dockerignore が許可リスト方式（* で全除外 → !server と !public で戻す → その後ろで env 系・*.pem・*.key・id_* を除外）"
 if [ -f "$DOCKERIGNORE" ] && di_allowlist_ok "$(cat "$DOCKERIGNORE")"; then pass; else fail "$DOCKERIGNORE が許可リスト形でない（先頭 * / !server / 後ろに秘密パターン）"; fi
 
 it "compose 原本が実ファイルとして存在する（シンボリックリンクでない）"

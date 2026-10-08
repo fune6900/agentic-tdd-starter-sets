@@ -36,6 +36,8 @@
 #   公開ポートと内側ポートのずれ   → 「/api/state が 200」（Host 検査がポート込みなのでホストから 403 または接続不能）
 #   HEALTHCHECK のポート決め打ち   → 「上限内に healthy」（ランダムポートでは不健康のまま）
 #   ボリュームの所有者ずれ         → 「上限内に healthy」または「DB の所有 UID」
+#   .dockerignore の !public を外す → 「public/ の静的ファイル3つが残る」「GET / が 200」（Issue #21）
+#   Dockerfile の COPY public を外す → 「GET / が 200」「GET /app.js が public/app.js とバイト一致」
 #   .dockerignore から test を外す → 「ビルドコンテキストに test/ が無い」
 #   .dockerignore の許可リスト(*)を外す → 「秘密鍵・証明書の囮が入らない」（server/ 配下の *.pem *.key id_* の囮）
 #   文書の docker run に ; 任意コマンド や -v /:/host を足す → 「実行前に許可形で拒否」（実行せず FAIL）
@@ -322,8 +324,11 @@ ENV_DECOYS=(
   "server/.env.local"
   "server/sub/deeper/.env"
   "server/sub/deeper/.env.production"
+  "public/.env"
+  "public/.env.local"
+  "public/sub/deeper/.env"
 )
-mkdir -p "$PROBE_CTX/server/sub/deeper"
+mkdir -p "$PROBE_CTX/server/sub/deeper" "$PROBE_CTX/public/sub/deeper"
 for d in "${ENV_DECOYS[@]}"; do : > "$PROBE_CTX/$d"; done
 # 秘密鍵・証明書の囮（多層防御）。ファイル名に env 系を含まないので、env 系の除外では落ちない。server/ 配下（許可リストで戻される場所）にも置く
 SECRET_DECOYS=(
@@ -336,6 +341,10 @@ SECRET_DECOYS=(
   "server/sub/deeper/key.pem"
   "server/sub/deeper/server.key"
   "server/sub/deeper/id_ecdsa"
+  "public/cert.pem"
+  "public/tls.key"
+  "public/id_rsa"
+  "public/sub/deeper/key.pem"
 )
 for d in "${SECRET_DECOYS[@]}"; do : > "$PROBE_CTX/$d"; done
 
@@ -371,6 +380,13 @@ if [ "$PROBE_RC" -eq 0 ] && [ -z "$LEAKED" ]; then pass; else fail "入ってい
 
 it "ビルドコンテキストに server/server.mjs は残る（除外しすぎていない）"
 if [ "$PROBE_RC" -eq 0 ] && [ -f "$PROBE_OUT/server/server.mjs" ]; then pass; else fail "server/server.mjs が無い"; fi
+
+it "ビルドコンテキストに public/ の静的ファイル3つが残る（!public が効いている。Issue #21）"
+MISSING=""
+for f in index.html app.js style.css; do
+  if [ ! -f "$PROBE_OUT/public/$f" ]; then MISSING="${MISSING} public/${f}"; fi
+done
+if [ "$PROBE_RC" -eq 0 ] && [ -z "$MISSING" ]; then pass; else fail "無い:${MISSING:- （書き出せていない）}"; fi
 
 # 自己診断: .dockerignore を外した同じ構造では test/ docs/ data/ が現れる = 上の「無い」は空振りでない
 NOIGNORE_CTX="$WORK/ctx-noignore"
@@ -477,6 +493,38 @@ assert_eq "$CODE" "403"
 
 it "Sec-Fetch-Site: cross-site なら 403（クロスサイトのブラウザ経由を止める）"
 CODE="$(http_code /api/state -H "Sec-Fetch-Site: cross-site")"
+assert_eq "$CODE" "403"
+
+# ビュー（Issue #21）: コンテナ越しでも静的ファイルが配信され、全応答にセキュリティヘッダが付く
+HDR_FILE="$WORK/headers.txt"
+it "ホストから GET / が 200（public/ がイメージに入っている）"
+CODE="$(http_code / -D "$HDR_FILE")"
+assert_eq "$CODE" "200"
+
+it "GET / の応答に Content-Security-Policy: default-src 'self' / nosniff / X-Frame-Options: DENY が付く"
+if [ -s "$HDR_FILE" ] \
+  && grep -qiE "^content-security-policy: default-src 'self'.?$" "$HDR_FILE" \
+  && grep -qiE '^x-content-type-options: nosniff.?$' "$HDR_FILE" \
+  && grep -qiE '^x-frame-options: DENY.?$' "$HDR_FILE"; then
+  pass
+else
+  fail "ヘッダ: $(tr -d '\r' < "$HDR_FILE" 2>/dev/null | head -n 12 | tr '\n' '|' | cut -c1-300)"
+fi
+
+it "GET / の本文がリポジトリの public/index.html とバイト一致する"
+CODE="$(http_code /)"
+if [ "$CODE" = "200" ] && [ -s "$MONITOR_DIR/public/index.html" ] && cmp -s "$BODY_FILE" "$MONITOR_DIR/public/index.html"; then pass; else fail "ステータス ${CODE}、本文が違う、または public/index.html が無い"; fi
+
+it "GET /app.js が 200 で、本文が public/app.js とバイト一致する"
+CODE="$(http_code /app.js)"
+if [ "$CODE" = "200" ] && [ -s "$MONITOR_DIR/public/app.js" ] && cmp -s "$BODY_FILE" "$MONITOR_DIR/public/app.js"; then pass; else fail "ステータス ${CODE}、または本文が違う"; fi
+
+it "GET /index.html は 404 で、404 にもセキュリティヘッダが付く（許可リスト外・全応答に付与）"
+CODE="$(http_code /index.html -D "$HDR_FILE")"
+if [ "$CODE" = "404" ] && grep -qiE "^content-security-policy: default-src 'self'.?$" "$HDR_FILE"; then pass; else fail "ステータス ${CODE}"; fi
+
+it "Sec-Fetch-Site: cross-site なら GET / も 403（静的配信にも検査が掛かる）"
+CODE="$(http_code / -H "Sec-Fetch-Site: cross-site")"
 assert_eq "$CODE" "403"
 
 # ══════════════════════════════════════════════

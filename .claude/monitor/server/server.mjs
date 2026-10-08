@@ -3,7 +3,7 @@
 // 受信した値の行き先は SQLite・/api/state・SSE のみ。エラー本文とログには載せない。
 
 import http from 'node:http';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareDbPath } from './db-guard.mjs';
@@ -21,6 +21,19 @@ export const PRUNE_EVERY_APPENDS = 1000;
 // 既定のデータディレクトリ。gitignore 済みの .claude/monitor/data/（リポジトリにも、ホーム配下にも置かない）
 const DEFAULT_DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const DB_FILE_NAME = 'monitor.db';
+// ビューの静的ファイル。固定の3つだけを起動時に読む（URL からパスを組み立てない。読めなければ起動失敗 = fail closed）
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const STATIC_FILES = Object.freeze({
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/style.css': ['style.css', 'text/css; charset=utf-8'],
+});
+// 全応答（JSON・エラー・静的・SSE）に付けるセキュリティヘッダ。定数1つから付け、他で重複して書かない
+const SECURITY_HEADERS = Object.freeze({
+  'Content-Security-Policy': "default-src 'self'",
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+});
 
 const ERRORS = Object.freeze({
   FORBIDDEN: [403, 'Forbidden'],
@@ -50,7 +63,7 @@ function sendJson(res, status, payload, extraHeaders = {}) {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
+    ...SECURITY_HEADERS,
     ...extraHeaders,
   });
   res.end(body);
@@ -126,6 +139,13 @@ function rejectTooLarge(req, res) {
 export async function createServer({
   port = DEFAULT_PORT, bind = resolveBind(process.env), dbPath, dataDir = DEFAULT_DATA_DIR, now, retentionMs, maxRows, derive = deriveState,
 } = {}) {
+  // 静的ファイルを先に読む（読めなければ DB を開く前に落ちる）
+  const staticRoutes = Object.fromEntries(Object.entries(STATIC_FILES).map(([path, [file, type]]) => {
+    const body = readFileSync(join(PUBLIC_DIR, file));
+    const headers = { 'Content-Type': type, 'Content-Length': body.length, 'Cache-Control': 'no-store', ...SECURITY_HEADERS };
+    return [path, { GET: (_req, res) => { res.writeHead(200, headers); res.end(body); } }];
+  }));
+
   // 検査 → 作成の順。リンクなら listen の前に reject する
   const store = openStore({ dbPath: prepareDbPath(dbPath ?? join(dataDir, DB_FILE_NAME)), now, retentionMs, maxRows });
   const clients = new Set();
@@ -190,7 +210,7 @@ export async function createServer({
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
-      'X-Content-Type-Options': 'nosniff',
+      ...SECURITY_HEADERS,
     });
     res.flushHeaders();
     clients.add(res);
@@ -199,6 +219,7 @@ export async function createServer({
   }
 
   const routes = {
+    ...staticRoutes,
     '/api/events': { POST: postEvent },
     '/api/state': { GET: (req, res) => getState(res) },
     '/api/stream': { GET: (_req, res) => openStream(res) },
@@ -221,7 +242,8 @@ export async function createServer({
     return handler(req, res);
   }
 
-  const server = http.createServer((req, res) => {
+  // requireHostHeader: false: Host 欠落の要求を Node の 400 に任せず、自前の Host 検査で 403 にする（セキュリティヘッダも付く）
+  const server = http.createServer({ requireHostHeader: false }, (req, res) => {
     handle(req, res).catch(() => {
       // 例外・スタック・パス・入力値は載せない。ヘッダ送信済みなら接続を切るだけ
       if (res.headersSent) res.destroy();

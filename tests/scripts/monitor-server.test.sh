@@ -33,7 +33,7 @@ trap cleanup_sandboxes EXIT
 TEST_DIR=".claude/monitor/test"
 SECURITY_MD=".claude/rules/security.md"
 CI_YML=".github/workflows/template-ci.yml"
-MIN_NODE_TESTS=120
+MIN_NODE_TESTS=239
 
 # 部分文字列の包含（失敗時に対象全文を吐かない。長い節・ジョブでログが埋まるため）
 assert_has() { # <対象> <部分文字列>
@@ -149,7 +149,7 @@ fi
 suite "monitor-server: node:test スイート（.claude/monitor/test）"
 # ══════════════════════════════════════════════
 
-for f in validate derive store server server-reject server-security server-fetch-site server-dbpath sse static; do
+for f in validate derive store server server-reject server-security server-fetch-site server-dbpath sse static view-logic view-source view-static; do
   it "テストファイル ${f}.test.mjs が存在する"
   assert_file "$TEST_DIR/$f.test.mjs"
 done
