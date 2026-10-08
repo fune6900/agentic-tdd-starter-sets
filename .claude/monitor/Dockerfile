@@ -5,6 +5,7 @@ WORKDIR /app
 # DB の置き場所（compose の名前付きボリュームの target）。ここを node 所有にしておかないと、初回マウント時に root 所有になり起動できない
 RUN mkdir /data && chown node:node /data
 COPY server ./server
+COPY public ./public
 # 素の docker run でも起動できるよう、DB は node 所有の /data に置く（BIND は設定しない = イメージ既定はループバック listen）
 ENV MONITOR_DB=/data/monitor.db
 USER node

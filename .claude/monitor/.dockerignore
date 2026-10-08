@@ -1,5 +1,6 @@
 *
 !server
+!public
 **/.env*
 **/*.pem
 **/*.key

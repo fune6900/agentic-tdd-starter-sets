@@ -1,0 +1,170 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-alt: #eef1f5;
+  --text: #1f2933;
+  --muted: #52606d;
+  --border: #d3d9e0;
+  --accent: #0b5cad;
+  --running: #0a6b2d;
+  --waiting: #8a4b00;
+  --done: #3e4c59;
+  --ended: #616e7c;
+  --unknown: #b42318;
+  --running-bg: #e3f6e9;
+  --waiting-bg: #fff1d6;
+  --unknown-bg: #fde8e6;
+  --new-row: #e8f1fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161b;
+    --surface: #1b2128;
+    --surface-alt: #242c35;
+    --text: #e4e9ee;
+    --muted: #a3afbc;
+    --border: #3a4551;
+    --accent: #7db8f2;
+    --running: #6fdc92;
+    --waiting: #f5b85a;
+    --done: #b6c1cc;
+    --ended: #9aa6b2;
+    --unknown: #ff8f85;
+    --running-bg: #14301f;
+    --waiting-bg: #3a2c10;
+    --unknown-bg: #3d1a17;
+    --new-row: #1d3249;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  margin: 0 auto;
+  padding: 1rem;
+  max-width: 80rem;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+h1 { font-size: 1.4rem; margin: 0.25rem 0; }
+h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; padding-left: 0.5rem; border-left: 4px solid var(--accent); }
+h3 { font-size: 0.95rem; margin: 0 0 0.35rem; font-family: ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+
+#connection-status {
+  margin: 0;
+  padding: 0.1rem 0.7rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+#sessions-empty { color: var(--muted); padding: 0.5rem; margin: 0; }
+#sessions-empty[hidden] { display: none; }
+
+/* ---------- 共通テーブル ---------- */
+table { border-collapse: collapse; width: 100%; background: var(--surface); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  font-size: 0.85rem;
+  vertical-align: top;
+}
+th { background: var(--surface-alt); font-weight: 600; white-space: nowrap; }
+td { overflow-wrap: anywhere; word-break: break-word; }
+
+/* ---------- エージェント木 ---------- */
+.tree-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.tree-list { list-style: none; margin: 0; padding: 0; }
+.tree-node {
+  padding: 0.2rem 0 0.2rem 0.5rem;
+  border-left: 2px solid var(--border);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.tree-name { font-weight: 600; }
+.tree-tools {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: var(--surface-alt);
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  vertical-align: baseline;
+}
+.tree-tools::before { content: "実行中: "; font-family: system-ui, sans-serif; }
+
+/* 深さ: app.js の MAX_TREE_DEPTH_CLASS と数を一致させる（0..5）。狭い幅では階段を浅くして本文幅を確保する */
+.depth-0 { margin-left: 0; }
+.depth-1 { margin-left: 1rem; }
+.depth-2 { margin-left: 2rem; }
+.depth-3 { margin-left: 3rem; }
+.depth-4 { margin-left: 4rem; }
+.depth-5 { margin-left: 5rem; }
+@media (min-width: 40rem) {
+  .depth-1 { margin-left: 1.5rem; }
+  .depth-2 { margin-left: 3rem; }
+  .depth-3 { margin-left: 4.5rem; }
+  .depth-4 { margin-left: 6rem; }
+  .depth-5 { margin-left: 7.5rem; }
+}
+
+/* 状態: 色 + 先頭記号 + ラベル文字（textContent）で伝える */
+[class^="status-"], [class*=" status-"] {
+  display: inline-block;
+  padding: 0 0.45rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-running { color: var(--running); background: var(--running-bg); }
+.status-running::before { content: "\25B6\00a0"; }
+.status-waiting { color: var(--waiting); background: var(--waiting-bg); }
+.status-waiting::before { content: "\23F8\00a0"; }
+.status-done { color: var(--done); background: var(--surface-alt); }
+.status-done::before { content: "\2713\00a0"; }
+.status-ended { color: var(--ended); background: var(--surface-alt); font-weight: 400; }
+.status-ended::before { content: "\25A0\00a0"; }
+.status-unknown { color: var(--unknown); background: var(--unknown-bg); }
+.status-unknown::before { content: "?\00a0"; }
+
+/* セッション表の状態セルは td 自体に class が付くので、表示を table-cell に戻す */
+td[class^="status-"] { display: table-cell; padding: 0.3rem 0.5rem; border-radius: 0; background: transparent; white-space: normal; }
+td.status-running, td.status-waiting, td.status-unknown { font-weight: 600; }
+
+/* ---------- イベント時系列 ----------
+   DOM 自体を新しい順（先頭が最新）に持つ。通常の table レイアウトのまま、
+   固定レイアウトと折り返しで 375px でも横スクロールを出さない。 */
+/* 外側のスクロール容器は index.html の変更が要るので置かない。sticky はページのスクロールに対して効く */
+#timeline { table-layout: fixed; }
+#timeline th { position: sticky; top: 0; z-index: 1; white-space: normal; overflow-wrap: anywhere; }
+#timeline th, #timeline td { overflow-wrap: anywhere; }
+#timeline th:nth-child(1) { width: 18%; }
+#timeline th:nth-child(2) { width: 16%; }
+#timeline th:nth-child(3) { width: 16%; }
+#timeline th:nth-child(4) { width: 16%; }
+#timeline th:nth-child(5) { width: 14%; }
+#timeline tbody tr:first-child td { background: var(--new-row); }
+#timeline tbody tr:first-child td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+#timeline td { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; }
+
+@media (prefers-reduced-motion: no-preference) {
+  #connection-status { transition: color 0.2s; }
+}
