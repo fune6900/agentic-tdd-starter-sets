@@ -15,6 +15,8 @@
 #   loop-state.sh complete                   正常完了
 #   loop-state.sh clear                      状態を削除
 #
+# 経過時間はスリープ中を除いた「起きていた時間」で数える（取得できなければ壁時計）。
+#
 # 上限の既定値（環境変数で上書き可）:
 #   LOOP_MAX_RETRY=3  LOOP_MAX_MINUTES=60  LOOP_MAX_SAME_GATE_FAIL=2
 
@@ -45,6 +47,56 @@ fi
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 now_epoch() { date -u +%s; }
+
+# 起きていた時間（秒・整数）。スリープ中は進まない。失敗は空で返し、壁時計に倒す。
+# 値を環境変数で差し替える口は作らない。本番でハードストップを緩める抜け道になる。
+awake_now() {
+  local clock=CLOCK_MONOTONIC
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] && clock=CLOCK_UPTIME_RAW
+  perl -MTime::HiRes -e "print int(Time::HiRes::clock_gettime(Time::HiRes::$clock())), qq{\\n}" 2>/dev/null
+}
+
+# 起動 ID。再起動をまたぐと起きていた時間の基準が無効になるので、init 時と突き合わせる。
+# 失敗は空で返し、壁時計に倒す。
+# macOS は kern.bootsessionuuid（起動ごとの UUID）。kern.boottime は時刻補正で usec が変わるため使わない。
+boot_id_now() {
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    sysctl -n kern.bootsessionuuid 2>/dev/null
+  else
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null
+  fi
+}
+
+# 整数（1行・数字のみ）なら出力、そうでなければ何も出さない
+uint_or_empty() { if valid_uint "$1"; then printf '%s' "$1"; fi; }
+
+# 経過時間を計算して ELAPSED_MIN / ELAPSED_SOURCE / ELAPSED_LABEL / WALL_ELAPSED_MIN に入れる（show と check で共有）。
+# 4 値を返すためグローバル変数で返す。$( ) で呼ぶとサブシェルになり反映されない。
+# 起きていた時間で数えるのは、基準・現在値が整数で、起動 ID が一致し、
+# 現在値が基準以上で、差分が壁時計の差分 + 60 秒以内のときだけ。それ以外は壁時計。
+compute_elapsed() { # <started_epoch>
+  local wall_sec=$(( $(now_epoch) - $1 ))
+  WALL_ELAPSED_MIN=$(( wall_sec / 60 ))
+  ELAPSED_MIN=$WALL_ELAPSED_MIN
+  ELAPSED_SOURCE=wall
+  ELAPSED_LABEL=壁時計
+
+  local start cur boot_saved boot_cur awake_sec
+  start="$(uint_or_empty "$(jq -r '.awake_start // empty' "$STATE_FILE")")"
+  [ -n "$start" ] || return 0
+  cur="$(uint_or_empty "$(awake_now)")"
+  [ -n "$cur" ] || return 0
+  boot_saved="$(jq -r '.boot_id // empty' "$STATE_FILE")"
+  boot_cur="$(boot_id_now)"
+  [ -n "$boot_saved" ] && [ "$boot_saved" = "$boot_cur" ] || return 0
+  [ "$cur" -ge "$start" ] || return 0
+  awake_sec=$(( cur - start ))
+  [ "$awake_sec" -le $(( wall_sec + 60 )) ] || return 0
+
+  ELAPSED_MIN=$(( awake_sec / 60 ))
+  ELAPSED_SOURCE=awake
+  ELAPSED_LABEL=起きていた時間
+}
 
 require_state() {
   if [ ! -f "$STATE_FILE" ]; then
@@ -91,7 +143,12 @@ cmd_init() {
   # epic は外部記憶（loop-journal.sh）がジャーナルの宛先を特定するのに使う
   local epic="${3:-${LOOP_EPIC:-}}"
   mkdir -p "$STATE_DIR"
+  local awake_start boot_id
+  awake_start="$(uint_or_empty "$(awake_now)")"
+  boot_id="$(boot_id_now)"
   jq -n \
+    --argjson awake_start "${awake_start:-null}" \
+    --arg boot_id "$boot_id" \
     --arg issue "$issue" \
     --arg branch "$branch" \
     --arg epic "$epic" \
@@ -107,6 +164,8 @@ cmd_init() {
       status: "running",
       started_at: $started_at,
       started_epoch: $started_epoch,
+      awake_start: $awake_start,
+      boot_id: (if $boot_id == "" then null else $boot_id end),
       limits: {
         max_retry: $max_retry,
         max_minutes: $max_minutes,
@@ -123,9 +182,9 @@ cmd_init() {
 
 cmd_show() {
   require_state
-  local elapsed
-  elapsed=$(( ( $(now_epoch) - $(jq -r '.started_epoch' "$STATE_FILE") ) / 60 ))
-  jq --argjson elapsed "$elapsed" '. + {elapsed_minutes: $elapsed}' "$STATE_FILE"
+  compute_elapsed "$(jq -r '.started_epoch' "$STATE_FILE")"
+  jq --argjson elapsed "$ELAPSED_MIN" --argjson wall "$WALL_ELAPSED_MIN" --arg source "$ELAPSED_SOURCE" \
+    '. + {elapsed_minutes: $elapsed, elapsed_source: $source, wall_elapsed_minutes: $wall}' "$STATE_FILE"
 }
 
 cmd_gate() {
@@ -210,7 +269,7 @@ cmd_complete() {
 cmd_check() {
   require_state
 
-  local status retry max_retry max_minutes max_gate_fail started elapsed
+  local status retry max_retry max_minutes max_gate_fail started elapsed label
   status=$(jq -r '.status' "$STATE_FILE")
   retry=$(jq -r '.retry' "$STATE_FILE")
   max_retry=$(jq -r '.limits.max_retry' "$STATE_FILE")
@@ -228,7 +287,9 @@ cmd_check() {
     fi
   done
 
-  elapsed=$(( ( $(now_epoch) - started ) / 60 ))
+  compute_elapsed "$started"
+  elapsed=$ELAPSED_MIN
+  label=$ELAPSED_LABEL
 
   if [ "$status" = "halted" ]; then
     echo "HALTED: $(jq -r '.halt_reason' "$STATE_FILE")" >&2
@@ -241,7 +302,7 @@ cmd_check() {
   fi
 
   if [ "$elapsed" -ge "$max_minutes" ]; then
-    cmd_stop "時間上限に到達（${elapsed}分 / 上限 ${max_minutes}分）。"
+    cmd_stop "時間上限に到達（${label}で ${elapsed}分 / 上限 ${max_minutes}分）。"
     return 1
   fi
 
@@ -255,7 +316,7 @@ cmd_check() {
     return 1
   fi
 
-  echo "OK: retry=$retry/$max_retry 経過=${elapsed}分/${max_minutes}分"
+  echo "OK: retry=$retry/$max_retry 経過=${elapsed}分/${max_minutes}分（${label}）"
   return 0
 }
 

@@ -155,6 +155,15 @@ Addy Osmani のフレームワークと、このリポジトリの実装の対�
 | 最大経過時間（1 Issue あたり・分） | **60** | `LOOP_MAX_MINUTES` |
 | 同一ゲートの連続 FAIL | **2** | `LOOP_MAX_SAME_GATE_FAIL` |
 
+**経過時間はマシンが起きていた時間で数え、スリープを除く。** 時間上限が守るのは AI が働き続けるコストで、
+スリープ中はコストが発生しないため（#21 で Mac のスリープが上限に数えられ、作業量と無関係に停止した）。
+取得源は `perl` の `Time::HiRes`（macOS は `CLOCK_UPTIME_RAW`、それ以外は `CLOCK_MONOTONIC`）。
+起動 ID は macOS が `kern.bootsessionuuid`、Linux が `/proc/sys/kernel/random/boot_id`。
+Debian 系の slim イメージは `perl-base` だけで `Time::HiRes` が無く、壁時計で数える（実測）。
+**測れない・再起動した（起動 ID が変わった・値が減った）・起きていた時間が壁時計より長い場合は壁時計で数える。**
+上限が緩む方向には倒さない。どちらで数えたかは `loop-state.sh show` の `elapsed_source`（`awake` / `wall`）で分かる。
+人間の不在は、マシンが起きている限り経過に数えられる。
+
 ### 停止時の挙動
 
 上限に到達したら、**独断で先へ進まず、独断で作業を放棄もせず、人間に報告して指示を仰ぐ。**
