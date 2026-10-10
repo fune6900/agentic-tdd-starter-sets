@@ -457,3 +457,51 @@ status: active
 - **なぜ**: G1 は CI 全段と定義しているので、CI の赤は G1 の FAIL として retry に数えた。1 行の修正で G2〜G5 の判定対象（送信内容・読み取り経路）に影響しないため、ユーザーと合意した「G1 → コミット → CI」で閉じた
 - **残課題**: done（前エントリ）の (1)〜(4) に加え、(5) 手元の G1 に bash 5 の実行を常設するか（lessons に次回ルールとして記録済み。CI 側は既に bash 5）
 - **次**: マスターの PR 確認 → マージ → エピックの次の Issue
+
+## 2026-10-10T14:51Z / #24 / start — bootstrap-monitor.sh で導入先に監視用 compose を生成する
+
+- **やったこと**: #24 に着手（エピック ai-monitor の Issue 8）。予算 180 分（ユーザー指示。#23 の教訓どおり着手時に明示）。エピック進捗表の #23 を完了に更新
+- **事実確認（推測で列挙しない・#6）**: 探索名は compose-go `cli/options.go` の `DefaultFileNames`（compose.yaml / compose.yml / docker-compose.yml / docker-compose.yaml）と `DefaultOverrideFileNames`（compose.override.yml / .yaml / docker-compose.override.yml / .yaml）の 8 つ。Docker 公式ドキュメント（merge）に「作業ディレクトリと**親ディレクトリ**を探索する」。`include` は Compose v2.20.0（compose-go#416）。手元は v2.38.2
+- **方針と理由**: (1) 既存候補の判定はプロジェクト直下だけでなく**祖先ディレクトリも**見る。祖先に compose がある導入先で直下に compose.yaml を作ると、`docker compose up` が読むファイルが変わり既存の挙動を壊すため。見つかれば compose.yaml は作らず案内のみ (2) override 名も候補に含める。override だけがある所に compose.yaml を作ると override が合成されて挙動が変わるため (3) 生成条件（未確定事項 8）は Planner 既定案「package.json または compose 候補がある場合のみ」。テンプレート本体には package.json も compose も無いので何も生成しない (4) 実装は bootstrap-project.sh の say / note / 早期 exit / 再確認 + noclobber の型を流用し、同居はさせない (5) 外部由来のパスを開くときは 1 回だけ開いて fd で判定（#23 の教訓）。書き込みは noclobber で O_EXCL 相当
+- **運用**: `.claude/settings.json` の SessionStart 登録は自己改変チェックに掛かるので、複製上で作って最後にユーザーが差し替える（#23 の教訓）
+- **参照した教訓**: #10 symlink・親シェル判定 / #11 照合値の偽装経路 / #6 探索名は事実から / #5 変異・多バイト / #23 フックと settings は複製で・1 回だけ開く・並行 QA の共有ヘルパ・bash 5 / #22 1 項目だけ壊すテスト
+
+## 2026-10-10T15:19Z / #24 / impl — bootstrap-monitor.sh と SessionStart 登録
+
+- **やったこと**: QA が `bootstrap-monitor.test.sh`（303 件。直下 8 名・祖先 1〜3 階層・リンク 10 対象×通常/ダングリング・冪等・フラグ・番兵・settings 登録順・docker compose config）と lib.sh の new_sandbox 追加で Red（164 FAIL）。Coder が `.claude/scripts/bootstrap-monitor.sh`（219 行）を本体に直接作成、settings.json の新版は scratchpad で作り、ユーザーが chmod +x と差し替え
+- **なぜ**: スクリプトは未登録の間は壊れても全ツールが止まらないので本体に直接書いた。settings.json は全セッションの権限とフックを決めるので複製で作って差し替え（#23 の教訓）。compose.monitor.yml の書き込みに失敗したら compose.yaml を作らない（参照先の無い include を残さない）
+- **設計**: 候補は直下から `/` まで `-e || -L`。直下の生成先・原本・候補のいずれかがリンクなら一切書かず WARN。原本は cat 1 回で読み番兵で末尾改行を保つ。書き込みは write_new に集約（直前の再確認 + サブシェル内 set -C）。案内は今回生成した時だけ note
+- **捨てた選択肢**: 部分書き込み時にファイルを名前で消す（差し替え経路になる）→ WARN のみで既知の限界に
+- **変異**: リンク検査（各対象）/ 直下・祖先の候補検出 / 生成条件 / noclobber それぞれ FAIL。冪等は初回判定だけ外すと直前の再確認が守る（3 つ同時で FAIL）
+- **次**: G1
+
+## 2026-10-10T15:46Z / #24 / gates — G1 FAIL（AC12）→ retry 1 / G1・G2 PASS・G3 FAIL → retry 2
+
+- **やったこと**: G1 は #18 の AC12（settings.json のフック定義を基準 fixture と完全一致で比較）が SessionStart 追加で FAIL → retry 1 で QA が基準 fixture に追加（除外で緩めず、想定外の変更は検出し続ける）。G1・G2（サンドボックスで生成 → compose up → /api/state 200・既存 / 祖先 / リンク / 冪等 / 本体で何も出ない）PASS。G3 が 4 件で FAIL
+- **G3 の中身と判断**: (1) security.md に新しい自動書き込み経路の記録が無い → 節を追加し既知の限界テストで固定（教訓 #15） (2) 祖先候補が生成条件まで満たす過剰生成（ホーム直下の compose で配下全リポジトリに生成）→ 生成条件は直下の package.json と直下候補だけ、祖先は compose.yaml の抑止のみ (3) --quiet では既存 compose への案内が初回だけ → 毎セッションのノイズを避けて初回限定のまま、README（Issue 9）を恒久導線にしてエピックの Issue 9 に受け入れ条件を追加 (4) 書き込み直前の再確認が動的に未固定 → PATH の cat shim で判定と書き込みの間にリンクを仕込むテスト。再確認と noclobber は片方だけ外しても通る二重防御、両方で FAIL
+- **途中**: bash 5（alpine）で shim の `#!/bin/bash` が起動せず 12 件 FAIL → shebang を `$BASH` に。COMPOSE_FILE を使う導入先では生成物が読まれない点は既知の限界と README へ
+- **次**: G1 から
+
+## 2026-10-10T16:00Z / #24 / halt — G5 中1 でハードストップ（retry 上限）
+
+- **やったこと**: retry 2 の後 G1〜G4 PASS、G5 が中 1・低 2 で FAIL。直すと retry 3 で上限（3）に達するため停止。コミット・PR はしていない（作業ツリーに未コミットのまま）
+- **各リトライで変えたこと**: retry 1 = #18 の AC12 の基準 fixture に SessionStart の追加を反映 / retry 2 = 生成条件を直下だけに・security.md の新節・shim による再確認の動的テスト・shim の shebang を $BASH に
+- **G5 の中身**: 原本 `.claude/monitor/compose.monitor.yml` を `[ -L ]` / `[ -f ]` で判定した後に外部 `cat` で名前で開き直す。差し替えで FIFO なら cat が永久ブロックして孤児が残る（15 回中 3 回）、/dev/zero への symlink なら終わらない（22 回中 3 回）、512MB の原本なら RSS 4.1GB・59 秒。低: noclobber は通常ファイル以外を指すリンク（/dev/null 等）を拒まない（理論上の経路）／security.md の「バイト複製」は NUL を落とすので不正確、PATH の cat / git のすり替えと .claude/monitor の祖先リンクが既知の限界に無い
+- **推定原因（確認済み）**: #23 で書いた教訓「外部由来のパスは 1 回だけ開いて fd で判定」を、Coder への指示で具体的な実装（perl sysopen）として渡していなかった。指示は「原本の読み取りも 1 回で済ませる」だけで、判定と読み取りが別の open になった。さらに QA の shim テストが外部 cat の呼び出しを前提にしたため、正しい形に寄せにくい契約になっていた
+- **人間に判断を求めたいこと**: (a) 上限を 4 に広げて直す (b) 中をリスク受容して既知の限界に書いて進める (c) ここで止めて次のセッションへ
+
+## 2026-10-10T16:21Z / #24 / impl — retry 3: 原本の読み取りと生成先への書き込みを perl の 1 回 open に
+
+- **やったこと**: ユーザー指示で retry 上限を 4 に。QA が契約（monitor-emit.sh の PERL_READ を手本に読み書きとも perl）でテストを置換・追加（452 件。名前で開く読み書きが無い静的検査、原本の位置への FIFO / /dev/zero へのリンク / 64KB 超、perl shim で書き込み直前にリンク・/dev/null・FIFO・通常ファイルを仕込む、perl 不在）し Red（71 FAIL）。Coder が `PERL_IO`（copy / read / write）を実装し、write_new と set -C を削除。security.md の節も書き換え
+- **なぜ**: 判定と読み書きを同じ open にすれば差し替えの窓そのものが無くなる。書き込みも O_EXCL|O_NOFOLLOW にしたので、noclobber が通常ファイル以外へのリンクを拒まない問題（G5 低）も同時に消えた。bash の変数を通さないので NUL を含む原本もバイト一致で複製される（実測 6 バイト一致）
+- **今回の指示の違い**: #24 の lessons どおり、Tech Lead が手本（PERL_READ）を名指しし、フラグ・上限・ハンドル名・起動方法まで契約として QA と Coder の両方に渡した
+- **途中**: テスト名の `\$fh` の直後の全角括弧で shell-lint が FAIL → QA が ASCII 括弧に
+- **次**: G1 から
+
+## 2026-10-10T16:41Z / #24 / done — 全ゲート PASS（retry 3・ユーザー承認で上限 4）
+
+- **やったこと**: retry 3 で原本の読み取りと生成先への書き込みを perl の 1 回 open に集約（PERL_IO。monitor-emit.sh の PERL_READ と同じ方式）。Refactor で原本の事前判定を「存在しない」だけにし FIFO・ディレクトリは perl の not_regular_file に。G1〜G5 全 PASS（G1 は Refactor 後に再実行、G5 は最終形で再検査）
+- **G5 の数値**: 原本の位置を 5 種で入れ替え続けながら 500 回 → ハング 0・不正な生成 0・孤児 0・最大 0.023 秒。生成先を被害ファイルへのリンク・/dev/null へのリンク・FIFO で入れ替えながら 500 回 → 被害ファイル無変更・ハング 0（O_EXCL で拒否 96 回＝競合は書き込み直前まで届いていた）。512MB の原本は読まずに too_large
+- **なぜ効いたか**: 今回は Tech Lead が手本（PERL_READ）・フラグ・上限・ハンドル名・起動方法を契約として QA と Coder の両方に渡した（#24 の lessons どおり）
+- **残課題**: (1) Issue 9 の README（初回限定の案内・COMPOSE_FILE / -f・perl 必須）(2) PERL_READ と PERL_IO の 2 本は 3 本目で共通化 (3) 10 月 4 日に起動された `nc -l 127.0.0.1 48731` が残っている（今回のセッション由来ではない。ユーザー判断）(4) G5 低: 部分ファイルが残ると次回は既存とみなす（security.md に記載）
+- **次**: コミット → PR → CI
