@@ -89,9 +89,13 @@ new_sandbox() {
   mkdir -p "$SANDBOX_PROJ/.claude/scripts" "$SANDBOX_PROJ/.claude/memory" "$SANDBOX_VAULT"
 
   local s
-  for s in loop-journal.sh loop-state.sh bootstrap-project.sh; do
+  for s in loop-journal.sh loop-state.sh bootstrap-project.sh bootstrap-monitor.sh; do
     [ -f "$REPO_ROOT/.claude/scripts/$s" ] && cp "$REPO_ROOT/.claude/scripts/$s" "$SANDBOX_PROJ/.claude/scripts/"
   done
+
+  # 監視用 compose の原本（bootstrap-monitor.sh が導入先へ複製する元）
+  mkdir -p "$SANDBOX_PROJ/.claude/monitor"
+  [ -f "$REPO_ROOT/.claude/monitor/compose.monitor.yml" ] && cp "$REPO_ROOT/.claude/monitor/compose.monitor.yml" "$SANDBOX_PROJ/.claude/monitor/"
 
   # 実リポジトリのブランチ名・ループ状態・環境変数を拾わせない
   export CLAUDE_PROJECT_DIR="$SANDBOX_PROJ"
