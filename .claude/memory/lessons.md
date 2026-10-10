@@ -17,6 +17,12 @@
 
 ## 教訓
 
+### 2026-10-11 / #25 文書の手順は、分岐ごとに書いたとおり実行しないと別の分岐で壊れる
+- **事象**: README の「既存の compose ファイルがある場合」の include スニペット（`path: compose.monitor.yml`、`project_directory: .`）は、既存 compose が導入先の直下にある場合だけ正しかった。祖先ディレクトリに compose がある導入先で同じスニペットを祖先の compose に追記すると、`open <親>/compose.monitor.yml: no such file or directory` で失敗した。path だけ直すと config は通るが build context とマウント元が存在しない `<親>/.claude/...` を指した。G2 の再確認で発覚
+- **原因**: Compose の `include` の `path` と `project_directory` は、**追記した compose ファイルの位置**から解決される。スニペットを 1 つの分岐（直下）でしか実行していなかった。#24 で「祖先も候補として数える」と決めた分岐が、文書側の手順に反映されていなかった
+- **対処**: 祖先用のスニペット（`path: <導入先の相対パス>/compose.monitor.yml`、`project_directory: <導入先の相対パス>`）を追記し、親・子の両方で `docker compose config` を実行して build context と `/memory` のマウント元を確認。孫以下の例も実測してから書いた
+- **次回ルール**: **文書にコマンドやスニペットを書くときは、実装が持つ分岐（直下 / 祖先、ある / 無い）ごとに書いたとおり実行する。** 「設定が通る」だけでなく、パスが正しい実体を指しているか（build context・マウント元）まで見る（#15 の再発 #20 と同じ系統）
+
 ### 2026-10-11 / #24 settings.json にフックを足すと、#18 の AC12 が基準 fixture との不一致で落ちる
 - **事象**: #24 で SessionStart に bootstrap-monitor を登録したら、`monitor-emit.test.sh` の `[AC12]`（monitor-emit を除いたフック定義が基準 fixture と完全一致）が G1 で FAIL
 - **原因**: AC12 は settings.json の全フックを `tests/scripts/fixtures/settings-hooks.baseline.json` と比べて「想定外の変更」を検出する設計。フックを足す Issue で基準を更新する手順が無かった

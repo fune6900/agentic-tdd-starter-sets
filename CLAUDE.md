@@ -50,6 +50,7 @@
 - `.claude/memory/` — ループの外部メモリ（教訓・経緯・エピック分解・実行状態）
 - `.claude/memory/journal/` — インナーループの経緯。エピック完了時に外部 Vault へ書き写して削除
 - `.claude/scripts/` — ループ制御スクリプト（ハードストップ・ワークツリー・外部記憶・初期セットアップ）
+- `.claude/monitor/` — 監視サーバ・ビュー・compose の原本（導入手順は README の「監視」）
 - `tests/` — テンプレート自身のシェルテスト（`bash tests/run.sh`）。導入先プロジェクトには持ち込まない
 
 ## 🔄 開発フロー
@@ -151,6 +152,13 @@ bash .claude/scripts/loop-journal.sh context
 - 冪等。`LOOP_BOOTSTRAP=0` で無効化できる
 
 生成された CI は以後手で管理してよい。内容を確認してからコミットすること。
+
+同じく `SessionStart` で `.claude/scripts/bootstrap-monitor.sh` が、監視サーバ用の `compose.monitor.yml` を生成する。
+compose ファイルが（直下・祖先とも）1つも無い場合のみ `include` だけの `compose.yaml` も作る。
+
+- **既存の compose ファイルは絶対に触らない**（`include` の追記方法を案内するだけ）
+- 直下に `package.json` も compose ファイルも無ければ**何も生成しない**
+- 冪等。`LOOP_BOOTSTRAP=0` で無効化できる
 
 ## 🛠 スラッシュコマンド
 

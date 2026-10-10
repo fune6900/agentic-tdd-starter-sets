@@ -505,3 +505,26 @@ status: active
 - **なぜ効いたか**: 今回は Tech Lead が手本（PERL_READ）・フラグ・上限・ハンドル名・起動方法を契約として QA と Coder の両方に渡した（#24 の lessons どおり）
 - **残課題**: (1) Issue 9 の README（初回限定の案内・COMPOSE_FILE / -f・perl 必須）(2) PERL_READ と PERL_IO の 2 本は 3 本目で共通化 (3) 10 月 4 日に起動された `nc -l 127.0.0.1 48731` が残っている（今回のセッション由来ではない。ユーザー判断）(4) G5 低: 部分ファイルが残ると次回は既存とみなす（security.md に記載）
 - **次**: コミット → PR → CI
+
+## 2026-10-10T16:47Z / #25 / start — 監視の導入手順と限界を文書化し、サンドボックスで E2E を実証する
+
+- **やったこと**: #25 に着手（エピック ai-monitor の Issue 9＝最後）。予算 120 分（ユーザー指示）。エピック進捗表の #24 を完了に更新
+- **ユーザーの決定**: E2E は既定ポート 4319 ではなく空きポート（`LOOP_MONITOR_PORT`）で行う。4319 は別アプリ test-todo-board が使用中（#23 で判明）。受け入れ条件の「4319」は「設定したポート」として扱い、README のポート変更手順の実証も兼ねる。PR に明記する
+- **方針と理由**: (1) 文書の記載項目は docs-consistency に機械検査を足して先に Red にする（No Test, No Code。文書でも書き漏れを機械で止める）(2) README に #24 G3 で追加した 3 点（既存 compose への案内は初回のみ・COMPOSE_FILE / -f の場合の手順・perl 必須）を含める (3) 数値・版・コマンドは実体（compose.monitor.yml・monitor-emit.sh・bootstrap-monitor.sh・security.md）から引用し、推測で書かない（#6）。README に載せるコマンド例はそのまま実行して確かめる（#15 の再発 #20）
+- **参照した教訓**: #6 事実から / #15・#20 文書のコマンドは書いたとおりに実行 / #17 実測値の行き先に文書を数える（個人パス） / #22 検証サーバは Tech Lead が起動 / #23 rm・curl 等は直接打たない / #24 実装の形を名指しする
+
+## 2026-10-10T16:50Z / #25 / impl — README の監視の節・CLAUDE.md / AGENTS.md の追記
+
+- **やったこと**: QA が docs-consistency に新 suite（18 件。README の監視の節に必須語、既定ポートと Compose 最低版は実体から読んで突き合わせ、個人パス禁止、CLAUDE.md / AGENTS.md の記載、自己診断）を足して Red（13 FAIL）。Coder が README に `## 📡 監視（ローカルのブラウザで見る）`、CLAUDE.md にディレクトリ構造と初回セットアップ、AGENTS.md に「監視は Codex 版では対象外」を追記。65 件 PASS
+- **なぜ**: 文書の書き漏れも機械で止める（No Test, No Code）。値は実体から読んでテストするので、実体が変われば文書のずれを検出できる
+- **確かめたこと**: README のスニペットは scratchpad の導入先で `docker compose config` まで実行（既定 4319、`LOOP_MONITOR_PORT=4400` で 4400、既存 compose への include 追記も通る）。`up` は G2 で
+- **判断**: AGENTS.md（Codex 版）にはディレクトリ構造の節が無く SessionStart フックも無いので、監視は対象外と書くだけにした
+- **次**: G1
+
+## 2026-10-10T17:13Z / #25 / done — 全ゲート PASS（retry 2）・エピック ai-monitor の最後の Issue
+
+- **やったこと**: README に監視の節、CLAUDE.md / AGENTS.md に追記、docs-consistency に 18 件。G2 で README どおりに導入先を作り、空きポート 47581 で compose up → 実 `claude -p` 4 回でメイン＋サブ・状態遷移・トークン数と推定 $・halted の赤、コンテナ停止時のフックは 0.011〜0.016 秒。retry 1（G4 中: 導入手順 1 が compose.yaml を無条件に生成すると読める）、retry 2（G2 FAIL: 祖先の compose に README のスニペットを追記すると path が解決できない）。Refactor で `a/b` の階層の例を足し、Tech Lead が compose config で実測
+- **なぜ**: 文書の手順は「書いたとおりに実行して通る」ことを分岐ごとに確かめないと、別の分岐（祖先に compose がある場合）で壊れる。include の path / project_directory は追記した compose ファイルの位置から解決される
+- **ユーザーの決定**: 既定ポート 4319 は別アプリが使用中なので空きポートで E2E。既定 4319 のままの起動は実機で未確認（PR に明記）
+- **後続 Issue の候補（G3 が切り出しを妥当と判定）**: (a) ツールを使わないサブエージェントでトークン数が 0 になり UsageSnapshot が agent=`unknown` に出た（#23。1 回観測、原因未調査）(b) 祖先に compose がある導入先でも bootstrap-monitor の案内文が直下用の例を出す（#24。README に明記済み）
+- **次**: コミット → PR → CI → マージ後にエピック完了（統合・Vault への flush）
