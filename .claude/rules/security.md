@@ -298,7 +298,7 @@ gh pr create --body-file /tmp/body.md
   コンテナ間の直接通信だけ。別ネットワークのコンテナも `host.docker.internal:<port>` から Host を偽れば、Docker Desktop では到達できる（実測）。
   Host を偽らなければ 403（実測）。Linux の Docker Engine は未実測（`host.docker.internal` は既定では解決されず、
   `--add-host host.docker.internal:host-gateway` が要る）。受信に認証が無いこと自体はマスター決定（エピック承認時）で、
-  根本対策（共有トークン）は本 Issue の範囲外
+  根本対策の共有トークン認証は**見送りを決定済み**（2026-10-10。理由と再検討の条件は `.claude/memory/epics/ai-monitor.md`「マスターの決定」）
 - Linux の Docker Engine 28.0 より前では、127.0.0.1 に publish したポートへ同じ L2 セグメントのホストから届く既知の経路がある
   （エンジンのバージョンに依存する。手元では再現していない）
 - コンテナから読めるもの: `/memory`（`.claude/memory` の `:ro` マウント）に journal のポインタ・lessons・epics・loop-state が含まれる
