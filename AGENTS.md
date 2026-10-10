@@ -81,6 +81,8 @@ bash .claude/scripts/bootstrap-project.sh             # 生成
 `package.json` の `scripts` を検出して `.github/workflows/ci.yml` を生成します。
 既存の `ci.yml` は上書きしません。スタックを検出できない場合は何も生成しません。
 
+監視（`bootstrap-monitor.sh`）は Codex 版では対象外です。
+
 ## Codex 運用ルール
 
 - 機能開発とバグ修正では TDD を使う。まずテストを作成または更新し、意図した理由で失敗することを確認してから、通過に必要な最小変更を実装する。

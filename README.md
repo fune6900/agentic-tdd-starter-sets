@@ -331,6 +331,85 @@ bash .claude/scripts/bootstrap-project.sh             # 生成する
 
 ---
 
+## 📡 監視（ローカルのブラウザで見る）
+
+Claude Code のセッション、サブエージェントの木、イベントの時系列、ループ状態、トークン数と推定コストを、
+ローカルのブラウザで見られる。サーバはコンテナで動き、`127.0.0.1` だけで待ち受ける。
+
+### 導入手順
+
+1. 導入先で Claude Code を起動する。`SessionStart` フックが `bootstrap-monitor`（`.claude/scripts/bootstrap-monitor.sh`）を呼び、
+   `compose.monitor.yml` を生成する。生成の条件は、プロジェクト直下に `package.json` か compose ファイルがあること。
+   compose ファイルが（直下・祖先とも）1 つも無い場合だけ、`include` するだけの `compose.yaml` も生成する。
+   既にある場合は、下の「既存の compose ファイルがある場合」を行う。
+2. コンテナを起動する。
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. `http://127.0.0.1:4319`（既定ポート）をブラウザで開く。
+
+必要なもの: Docker、Docker Compose `v2.20.0` 以上（`include` を使うため）、`jq`、`perl`（無い環境では compose を生成しない）。
+Codex 版は対象外（`SessionStart` フックが無いため。手動で動かす場合は `bash .claude/scripts/bootstrap-monitor.sh`）。
+
+### ポートを変える
+
+ポートは `LOOP_MONITOR_PORT` で変える（既定 `4319`）。**送信側（フック）とコンテナ側の両方に同じ値が要る。**
+フックは Claude Code を起動したシェルの環境変数を、compose はコマンドを実行したシェルの環境変数（または compose の変数ファイル）を読む。
+
+```bash
+export LOOP_MONITOR_PORT=4400
+docker compose up -d --build   # この値で起動したシェルから Claude Code も起動する
+```
+
+### 止める
+
+- 送信を止める: `LOOP_MONITOR=0`（Claude Code を起動する環境に設定する）
+- コンテナを止める: `docker compose down`
+
+### 既存の compose ファイルがある場合
+
+自動では追記しない。使っている compose ファイルに次を追記する。
+
+```yaml
+include:
+  - path: compose.monitor.yml
+    project_directory: .
+```
+
+`path` と `project_directory` は、**追記する compose ファイルから見た** `compose.monitor.yml` の場所に合わせる。
+上の書き方は、その compose ファイルが導入先の直下（`compose.monitor.yml` と同じディレクトリ）にある場合の例で、
+生成時の案内文に出る例も同じ。
+
+compose ファイルが導入先の**祖先ディレクトリ**にある場合（例: `<親>/compose.yaml` があり、導入先が `<親>/sub/`）は、
+`<親>` から見た導入先の相対パスにする（`sub` は導入先のディレクトリ名に置き換える。導入先が `<親>/a/b/` なら `a/b/compose.monitor.yml` と `a/b`）。
+
+```yaml
+# <親>/compose.yaml に追記
+include:
+  - path: sub/compose.monitor.yml
+    project_directory: sub
+```
+
+`project_directory` が `.` のままだと、build context とボリュームのマウント元が `<親>/.claude/...` を指してしまう。
+この形なら `<親>` でも `<親>/sub` でも `docker compose config` が通り、どちらも `<親>/sub/.claude/monitor` と
+`<親>/sub/.claude/memory` を指す。
+
+`compose.monitor.yml` はネットワーク `monitor-net` とボリューム `monitor-data` を定義する。
+既存の定義と名前が衝突しないか確認すること。
+
+### 注意点
+
+- 既存の compose ファイル（直下・祖先）がある導入先への案内は、`compose.monitor.yml` を生成した**初回**のセッションにしか出ない（フックは `--quiet` で呼ぶため）。
+  この README の手順が恒久的な導線になる。
+- `COMPOSE_FILE` や `-f` で compose ファイルを指定している導入先では、生成された `compose.yaml` は読まれない。
+  実際に使っている compose ファイルに `include` を追記する。
+- 認証は無く、監視はセキュリティ境界ではない。止まる範囲と止まらない範囲は
+  [`.claude/rules/security.md`](.claude/rules/security.md) の「監視の限界」を参照。
+
+---
+
 ## ⛔ ハードストップ
 
 「合格するまでやり直す」だけのループは、解けない問題に対して無限にリトライし、コストが際限なく増える。そのため停止条件を設ける。

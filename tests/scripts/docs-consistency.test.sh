@@ -384,4 +384,166 @@ assert_file_not_contains ".github/workflows/template-ci.yml" "sudo tar"
 it "pip の依存はバージョンを固定する"
 assert_file_contains ".github/workflows/template-ci.yml" "pyyaml=="
 
+# ══════════════════════════════════════════════
+suite "docs: 監視の導入手順と限界（Issue #25）"
+# ══════════════════════════════════════════════
+# README の「監視」を含む ## 見出しの配下に、導入者が迷わないための事項が全て書かれていること。
+# 節の切り出しは awk（lessons #10: grep の行単位で節境界を近似しない。コードフェンス内の ## は見出しにしない）。
+# 見出し名は固定しない。抽出結果が空なら FAIL（#22: 節が無い・空のとき素通りさせない）。
+# 既定ポートと Compose 最低版は実体から読む（値を直書きしない）。
+
+# doc_section <ファイル> <## 見出しに含まれる語>  → 該当する ## 節（### 以下を含む）の本文
+doc_section() {
+  awk -v key="$2" '
+    /^```/ { fence = !fence }
+    !fence && /^## / { p = (index($0, key) > 0); next }
+    p { print }
+  ' "$1"
+}
+
+# 実体から引用する値
+EMIT_PORT="$(sed -n 's/^port=\([0-9][0-9]*\)$/\1/p' .claude/hooks/monitor-emit.sh | head -n 1)"
+COMPOSE_PORT="$(sed -n 's/.*LOOP_MONITOR_PORT:-\([0-9][0-9]*\)}.*/\1/p' .claude/monitor/compose.monitor.yml | sort -u)"
+COMPOSE_MIN="$(sed -n 's/^#.*include は Compose \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' .claude/scripts/bootstrap-monitor.sh | head -n 1)"
+
+README_MON="$(doc_section README.md 監視)"
+
+# 必須語。1行1項目「番号|語」。欠けた項目を MON_MISSING に入れ、1つでも欠ければ 1。
+mon_terms_ok() { # <本文> <既定ポート> <Compose 最低版>
+  local line t n
+  MON_MISSING=""
+  while IFS='|' read -r n t; do
+    [ -n "$n" ] || continue
+    case "$1" in *"$t"*) ;; *) MON_MISSING="${MON_MISSING} [${n}]${t}" ;; esac
+  done <<TERMS
+1|bootstrap-monitor
+1|SessionStart
+1|docker compose up
+2|LOOP_MONITOR_PORT
+2|$2
+3|LOOP_MONITOR=0
+3|docker compose down
+4|$3
+5|include
+5|project_directory
+6|Codex
+6|対象外
+7a|初回
+7a|--quiet
+7b|COMPOSE_FILE
+7b|-f
+7c|perl
+8|monitor-net
+8|monitor-data
+8|衝突
+TERMS
+  # 項目9: 個人パス（/Users/<名前> /home/<名前>）を含まない（#17）
+  line="$(printf '%s\n' "$1" | grep -E '/(Users|home)/[A-Za-z0-9._-]+' || true)"
+  [ -z "$line" ] || MON_MISSING="${MON_MISSING} [9]個人パス混入"
+  [ -z "$MON_MISSING" ]
+}
+
+it "[前提] 既定ポートが実体（monitor-emit.sh と compose.monitor.yml）から一意に読める"
+assert_eq "${EMIT_PORT}/${COMPOSE_PORT}" "${EMIT_PORT}/${EMIT_PORT}"
+
+it "[前提] 既定ポートが数値で取れている（空なら突き合わせが成立しない）"
+case "$EMIT_PORT" in ''|*[!0-9]*) fail "既定ポートを実体から読めない" ;; *) pass ;; esac
+
+it "[前提] Compose 最低版が bootstrap-monitor.sh の出典コメントから読め、v2.20.0 である"
+assert_eq "$COMPOSE_MIN" "v2.20.0"
+
+it "README に「監視」を含む ## 見出しの節があり、中身が空でない"
+if [ -n "$README_MON" ]; then pass; else fail "README に監視の節が無い、または空"; fi
+
+it "README の監視の節に導入手順（bootstrap-monitor / SessionStart / docker compose up）がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[1]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に LOOP_MONITOR_PORT と実体の既定ポートがある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[2]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に停止方法（LOOP_MONITOR=0 と docker compose down）がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[3]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に Compose 最低版が実体（bootstrap-monitor.sh）と同じ値で書かれている"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[4]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に include の追記スニペット（include と project_directory）がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[5]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に Codex 版は対象外である旨がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[6]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に #24 G3 の3点（初回のみの案内・COMPOSE_FILE と -f・perl 必須）がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[7"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に monitor-net / monitor-data の名前の衝突への注意がある"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[8]"*) fail "欠け:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空" ;; esac
+
+it "README の監視の節に個人パス（/Users/<名前> /home/<名前>）が無い"
+mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
+case "$MON_MISSING" in *"[9]"*) fail "混入:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空（空の節を合格にしない）" ;; esac
+
+it "[自己診断] mon_terms_ok: 全語ありは通り、語を1つ消した合成本文・空本文・個人パス混入は FAIL する"
+selfdiag_mon() {
+  local full drop mut
+  full="bootstrap-monitor SessionStart docker compose up LOOP_MONITOR_PORT ${EMIT_PORT} LOOP_MONITOR=0 docker compose down ${COMPOSE_MIN} include project_directory Codex 対象外 初回 --quiet COMPOSE_FILE -f perl monitor-net monitor-data 衝突"
+  mon_terms_ok "$full" "$EMIT_PORT" "$COMPOSE_MIN" || { echo "全語ありが FAIL した:${MON_MISSING}"; return 1; }
+  for drop in bootstrap-monitor SessionStart "docker compose up" LOOP_MONITOR_PORT "$EMIT_PORT" "LOOP_MONITOR=0" \
+              "docker compose down" "$COMPOSE_MIN" include project_directory Codex 対象外 初回 --quiet \
+              COMPOSE_FILE -f perl monitor-net monitor-data 衝突; do
+    mut="${full//"$drop"/}"
+    if mon_terms_ok "$mut" "$EMIT_PORT" "$COMPOSE_MIN"; then echo "「${drop}」を消しても通った"; return 1; fi
+  done
+  if mon_terms_ok "" "$EMIT_PORT" "$COMPOSE_MIN"; then echo "空本文が通った"; return 1; fi
+  if mon_terms_ok "${full} /Users/someone/project" "$EMIT_PORT" "$COMPOSE_MIN"; then echo "/Users/ 混入が通った"; return 1; fi
+  if mon_terms_ok "${full} /home/someone/project" "$EMIT_PORT" "$COMPOSE_MIN"; then echo "/home/ 混入が通った"; return 1; fi
+  return 0
+}
+assert_ok selfdiag_mon
+
+it "[自己診断] doc_section: 監視の節だけを取り、コードフェンス内の ## と別節は拾わない"
+selfdiag_docsec() {
+  local f="${DIAG_MON}/sec.md" out
+  printf '%s\n' '## 別' 'OUT1' '## 🔭 監視' 'IN1' '```' '## 偽見出し' '```' '### 小節' 'IN2' '## 次' 'OUT2' > "$f"
+  out="$(doc_section "$f" 監視 | tr '\n' ' ')"
+  [ "$out" = 'IN1 ``` ## 偽見出し ``` ### 小節 IN2 ' ] || { echo "想定外の抽出: '${out}'"; return 1; }
+  printf '%s\n' '## 別' 'OUT' > "$f"
+  [ -z "$(doc_section "$f" 監視)" ] || { echo "見出しが無いのに抽出された"; return 1; }
+}
+DIAG_MON="$(mktemp -d)" || exit 1
+SANDBOXES+=("$DIAG_MON")
+assert_ok selfdiag_docsec
+
+# ---------- CLAUDE.md / AGENTS.md ----------
+CLAUDE_DIR_SEC="$(doc_section CLAUDE.md ディレクトリ構造)"
+CLAUDE_SETUP_SEC="$(doc_section CLAUDE.md 初回セットアップ)"
+AGENTS_SETUP_SEC="$(doc_section AGENTS.md 初回セットアップ)"
+
+it "CLAUDE.md のディレクトリ構造の節があり、.claude/monitor/ が載っている（節が空なら FAIL）"
+case "$CLAUDE_DIR_SEC" in '') fail "節が無い、または空" ;; *".claude/monitor/"*) pass ;; *) fail ".claude/monitor/ が無い" ;; esac
+
+it "CLAUDE.md の初回セットアップ節があり、bootstrap-monitor.sh が載っている（節が空なら FAIL）"
+case "$CLAUDE_SETUP_SEC" in '') fail "節が無い、または空" ;; *"bootstrap-monitor.sh"*) pass ;; *) fail "bootstrap-monitor.sh が無い" ;; esac
+
+# AGENTS.md はディレクトリ構造の節を持たず、初回セットアップは「Codex に SessionStart が無いので手動」の節。
+# 監視は Codex 版対象外（README と同じ）なので、導入手順の代わりに「対象外」であることと
+# 該当スクリプト名（自動生成されないこと）を初回セットアップ節に書かせる。
+it "AGENTS.md の初回セットアップ節に、監視（bootstrap-monitor.sh）が Codex 版では対象外である旨がある（節が空なら FAIL）"
+if [ -z "$AGENTS_SETUP_SEC" ]; then fail "節が無い、または空"
+else
+  agents_missing=""
+  for t in 監視 bootstrap-monitor.sh 対象外; do
+    case "$AGENTS_SETUP_SEC" in *"$t"*) ;; *) agents_missing="${agents_missing} ${t}" ;; esac
+  done
+  assert_eq "$(echo "$agents_missing" | tr -s ' ')" ""
+fi
+
 report
