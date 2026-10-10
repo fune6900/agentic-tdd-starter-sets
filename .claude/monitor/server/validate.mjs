@@ -3,7 +3,7 @@
 // reason は固定文言。入力値（秘密かもしれない）は載せない。
 
 import {
-  COMMON_REQUIRED, CONDITIONS, EVENT_MAX_BYTES, EVENT_NAMES, EVENTS, FIELDS, SCHEMA_VERSION,
+  COMMON_REQUIRED, CONDITIONS, EVENT_MAX_BYTES, EVENT_NAMES, EVENTS, FIELDS, schemaVersionFor,
 } from './schema.mjs';
 
 const REASON = Object.freeze({
@@ -51,15 +51,21 @@ function checkField(spec, value) {
       if (typeof value !== 'boolean') reject(REASON.value);
       return value;
     case 'object': {
+      // 全キー必須・未知キー不可・空不可
       if (!isPlainObject(value)) reject(REASON.value);
       const keys = Object.keys(value);
-      if (keys.length === 0 && !spec.allowEmpty) reject(REASON.value);
+      const specKeys = Object.keys(spec.keys);
+      if (keys.length !== specKeys.length || keys.some((k) => !Object.hasOwn(spec.keys, k))) reject(REASON.value);
       const out = {};
-      for (const k of keys) {
-        if (!Object.hasOwn(spec.keys, k)) reject(REASON.value);
-        out[k] = checkField(spec.keys[k], value[k]);
-      }
+      for (const k of keys) out[k] = checkField(spec.keys[k], value[k]);
       return out;
+    }
+    case 'array': {
+      if (!Array.isArray(value) || value.length > spec.maxItems) reject(REASON.value);
+      const items = value.map((item) => checkField(spec.item, item));
+      const seen = new Set(items.map((item) => item[spec.uniqueKey]));
+      if (seen.size !== items.length) reject(REASON.value);
+      return items;
     }
     default:
       return reject(REASON.value); // 未知の kind は fail closed
@@ -68,9 +74,10 @@ function checkField(spec, value) {
 
 function check(obj) {
   if (!isPlainObject(obj)) reject(REASON.shape);
-  if (obj.schema_version !== SCHEMA_VERSION) reject(REASON.version);
   const { event } = obj;
   if (typeof event !== 'string' || Buffer.byteLength(event, 'utf8') > EVENT_MAX_BYTES || !EVENT_NAMES.includes(event)) reject(REASON.event);
+  // schema_version はイベント別。一致する値だけを受理する
+  if (obj.schema_version !== schemaVersionFor(event)) reject(REASON.version);
 
   const spec = EVENTS[event];
   const allowed = new Set([...COMMON_REQUIRED, ...spec.required, ...spec.optional]);
@@ -80,13 +87,18 @@ function check(obj) {
     if (!Object.hasOwn(obj, k)) reject(REASON.keys);
   }
 
-  const out = { schema_version: SCHEMA_VERSION, event };
+  const out = { schema_version: schemaVersionFor(event), event };
   for (const k of keys) {
     if (k === 'schema_version' || k === 'event') continue;
     out[k] = checkField(FIELDS[k], obj[k]);
   }
   for (const c of CONDITIONS) {
-    if (Object.hasOwn(out, c.key) && out[c.whenKey] !== c.equals) reject(REASON.condition);
+    const present = Object.hasOwn(out, c.key);
+    if (c.presence === undefined) {
+      if (present && out[c.whenKey] !== c.equals) reject(REASON.condition);
+    } else if (out[c.whenKey] === c.equals && present !== (c.presence === 'required')) {
+      reject(REASON.condition);
+    }
   }
   return out;
 }

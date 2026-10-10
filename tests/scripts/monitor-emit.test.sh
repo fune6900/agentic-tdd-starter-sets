@@ -39,10 +39,42 @@
 #   jq の HOME 差し替え（.jq 遮断）    [AC14] .jq の test / with_entries 上書き（ファイル・ディレクトリ）
 #   32 バイト超を ? にする             [AC3] 33 / 44 バイト・40 文字 a・パス修飾のトークン断片がボディに出ない
 #
+# ── 変異テスト対応表（Issue #23 UsageSnapshot。実施済み。ただし末尾の「retry 2 で追加」の 3 行は実装後に実施する）──
+#   防御を外す変異                         落ちるべきテスト（it 名の先頭タグ）
+#   symlink 拒否（-L 判定）を外す          [US2] Stop: 最終要素が symlink（4 種）/ SubagentStop の symlink /
+#                                          symlink 拒否の結果にリンク先の集計値が載らない
+#   サイズ上限を外す / 超過判定を > にする  [US3] 上限がファイルサイズちょうど→ok / 1 バイト小さい→too_large（main・sub）
+#   +1 バイトの打ち切り（head -c）を外す    ブラックボックスでは単独で検出できない（stat の判定が先に too_large にするため。
+#                                          確認と読み取りの間の差し替えは競合で、security.md の限界に記録される範囲）。
+#                                          Coder は実装の単体確認（head -c 上限+1 の存在）をレビューで見ること
+#   環境変数で既定値を超えられる           [US3] 512MiB の疎ファイル × 上限 10^15 / 巨大桁 / 未設定 → いずれも too_large
+#   環境変数の不正値を無視しない           [US3] 不正値（空・0・負・+・先頭ゼロ・全角・改行入り等）13 通り
+#   FIFO を開く（-f の前に open する）      [US2] FIFO（not_regular_file）/ FIFO でも前景 1 秒未満
+#   message.id による重複排除を外す         [US1] 同じ id が 2〜4 行 / 離れた位置の同じ id / 最後の行を採る（順序違い 2 通り）
+#   部分合計を送る（不正行を飛ばして集計）  [US1] 正常 2 件 + 不正 1 件 / 不正な数値の全ケース（unknown のみ・models を持たない）
+#   モデル ID の unknown 化を外す           [US1] 許可外のモデル ID 7 種 / model キー無し / [US3] 番兵入りモデル ID
+#   番兵（本文・パス・id）を出力に通す      [US3] ボディに SNT / PATHSENT / msg_ が出ない / argv に出ない
+#   パスを argv に載せる                   [US3] argv に transcript_path の値が現れない
+#   agent_id の検証落ちを省略して送る       [US3] SubagentStop: agent_id が検証に落ちる（6 通り）
+#   Stop に agent_id を付ける               [US1] Stop は stdin に agent_id があっても UsageSnapshot に付けない
+#   全 0 の行を数える                       [US1] usage が全て 0 の行（<synthetic>）は数えない
+#   5 分側への寄せ / cache_split_unknown    [US1] キャッシュ書き込みの内訳（8 通り）
+#   前景で集計する（背景化しない）          [US4] 10MB 級 transcript の前景 1 秒未満（サーバ停止中・稼働中）
+#   --- retry 2 で追加（G5 中指摘: 判定と読み取りの間の差し替え競合）。実装後に実施する ---
+#   O_NONBLOCK を外す                       [US5] FIFO を渡す: ハングせず not_regular_file（タイムアウトで FAIL）/ 静的検査
+#   O_NOFOLLOW を外す                       [US5] /dev/zero への symlink → symlink / 静的検査
+#   fd 上の -f 判定（stat($fh)）を外す       [US5] /dev/zero（デバイス）・FIFO → not_regular_file・読み取りプロセスが残らない
+#   名前での再オープンが残る                [US5] 静的検査（<"$tpath" / wc -c / head -c / [ -L|-e|-f "$tpath" ]）
+#   --- Refactor で追加（G5 低指摘: PERL_UNICODE / PERLIO の :utf8 層）。実装後に実施する ---
+#   env -u PERL_UNICODE -u PERLIO と binmode を外す  [US5] 環境に PERL_UNICODE=SDA / 空 / D / PERLIO=:utf8 があっても ok（動作テスト）
+#   O_NOCTTY を外す                         [US5] 静的: O_NOCTTY が sysopen と同じ文に指定されている
+#
 # ── 検査の設計メモ ─────────────────────────────────────────────────────
 #   - emitted fixture はキー・値とも stdin の純関数（ts 等の可変値をスキーマが持たない）。
 #     よって [AC1] は「キー集合・型」と「値まで完全一致」を別 it で両方要求する。
-#     with-usage の emitted は transcript 由来（#7）で hook-stdin 側に対応物が無いので対象外。
+#     UsageSnapshot の emitted は transcript 由来（#23）で hook-stdin 側に対応物が無いので対象外
+#     （検査は末尾の「[US*] UsageSnapshot」節）。Stop / SubagentStop は UsageSnapshot が別に
+#     届くので、emit() は UsageSnapshot 以外の最初のボディを BODY にする。
 #   - 値の行き先を全数で数える（lessons #11）: 送信ボディ / curl の argv / stdout / stderr /
 #     一時ファイル。[AC2]=ボディ、[AC11]=argv、[AC5]=stdout・stderr、一時ファイルは
 #     フック実行前後の TMPDIR 差分（[AC11b]）。
@@ -202,12 +234,35 @@ check_quiet() { # <ラベル> [ACタグ。既定 AC5]
 
 # capture スタブへ送って新しいボディが届くまで待つ。BODY に届いたパス（無ければ空）。
 CAP_DIR=""; CAP_PORT=""; BODY=""
+# Stop / SubagentStop は元のイベントに加えて UsageSnapshot（Issue #23）が別に届く。
+# 到着順は不定なので、UsageSnapshot 以外の最初のボディを BODY にする（元のイベントの検査用）。
+# BODY_REQ は BODY と対のリクエスト記録。UsageSnapshot の検査は後述の snap_run を使う。
+BODY_REQ=""
 emit() { # <stdin ファイル> [VAR=val ...]
-  local in="$1" before; shift
+  local in="$1" before ev want n last saved
+  shift
   before="$(body_count "$CAP_DIR")"
+  ev="$(jq -r '.hook_event_name // empty' "$in" 2>/dev/null)"
   timed_hook "$in" LOOP_MONITOR_PORT="$CAP_PORT" "$@"
-  BODY=""
-  if wait_file "$CAP_DIR/body.$((before + 1))"; then BODY="$CAP_DIR/body.$((before + 1))"; fi
+  BODY=""; BODY_REQ=""
+  case "$ev" in Stop|SubagentStop) want=2 ;; *) want=1 ;; esac
+  wait_file "$CAP_DIR/body.$((before + 1))" || return 0
+  if [ "$want" -eq 2 ]; then
+    saved="$WAIT_ITERS"; WAIT_ITERS=50
+    wait_file "$CAP_DIR/body.$((before + 2))"
+    WAIT_ITERS="$saved"
+  fi
+  last="$(body_count "$CAP_DIR")"
+  n=$((before + 1))
+  while [ "$n" -le "$last" ]; do
+    if [ "$(jq -r '.event // empty' "$CAP_DIR/body.$n" 2>/dev/null)" != "UsageSnapshot" ]; then
+      BODY="$CAP_DIR/body.$n"; BODY_REQ="$CAP_DIR/req.$n"
+      return 0
+    fi
+    n=$((n + 1))
+  done
+  # UsageSnapshot しか届いていない（元のイベントが届かなかった）。BODY は空のまま
+  return 0
 }
 
 # 届かないことを検査する時は待ち時間を短くする（届くなら十分に短い時間で届く）
@@ -246,8 +301,8 @@ for f in "$STDIN_DIR"/*.json; do
   emit "$f"
 
   it "[AC1] ${name}: 送信ボディが届き、POST /api/events で Content-Type が JSON"
-  if [ -n "$BODY" ] && [ -f "$CAP_DIR/req.$(body_count "$CAP_DIR")" ]; then
-    req="$(cat "$CAP_DIR/req.$(body_count "$CAP_DIR")")"
+  if [ -n "$BODY" ] && [ -f "$BODY_REQ" ]; then
+    req="$(cat "$BODY_REQ")"
     case "$req" in
       "POST /api/events"*"content-type: application/json"*) pass ;;
       *) fail "リクエスト行またはヘッダが違う" "実際: ${req}" ;;
@@ -284,13 +339,13 @@ for f in "$STDIN_DIR"/*.json; do
   check_quiet "$name"
 done
 
-it "[AC1] emitted 側で対応する hook-stdin が無いのは with-usage だけ（#7 の transcript 由来）"
+it "[AC1] emitted 側で対応する hook-stdin が無いのは UsageSnapshot だけ（#23。transcript 由来の合成イベント）"
 orphans=""
 for e in "$EMITTED_DIR"/*.json; do
   n="$(basename "$e" .json)"
   [ -f "$STDIN_DIR/${n}.json" ] || orphans="$orphans $n"
 done
-assert_eq "$(echo "$orphans" | tr -s ' ')" " Stop.with-usage SubagentStop.with-usage"
+assert_eq "$(echo "$orphans" | tr -s ' ')" " UsageSnapshot.main-ok UsageSnapshot.sub-ok UsageSnapshot.unknown"
 
 it "[AC1] Notification（実測で未発火・fixture 無し）も スキーマ通りの最小ボディで送る"
 printf '%s' '{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","message":"SNTLEAFMSGX","cwd":"/work/project"}' >"$IN"
@@ -1135,5 +1190,830 @@ known_limit_first_token_secret() {
 }
 it "[AC13] 既知の限界: 先頭トークン自体が許可文字だけの秘密なら、ベース名として bash_command に載って送られる（設計上の限界として固定）"
 assert_ok known_limit_first_token_secret
+
+# ══════════════════════════════════════════════
+suite "[US0] UsageSnapshot（Issue #23）: 道具"
+# ══════════════════════════════════════════════
+# 仕様の正は event-schema.md「UsageSnapshot」。期待値は fixture（emitted/UsageSnapshot.*.json）と
+# 仕様の規則から導く。フックを実際に実行し、capture スタブに届いたボディを検査する。
+
+TR_DIR="$MON/test/fixtures/transcript"
+US_DIR="$WORK/usage"
+PATHSENT="$US_DIR/PATHSENT-dir"
+mkdir -p "$PATHSENT"
+SNAP=""; SNAP_N=0; SNAP_ITERS=150   # 0.02 秒刻み。既定の上限は 3 秒
+
+snap_scan() { # <before> → 直近の実行以降に届いた UsageSnapshot を SNAP（最初の 1 通）/ SNAP_N（通数）に
+  local before="$1" last n
+  SNAP=""; SNAP_N=0
+  last="$(body_count "$CAP_DIR")"
+  n=$((before + 1))
+  while [ "$n" -le "$last" ]; do
+    if [ "$(jq -r '.event // empty' "$CAP_DIR/body.$n" 2>/dev/null)" = "UsageSnapshot" ]; then
+      [ -z "$SNAP" ] && SNAP="$CAP_DIR/body.$n"
+      SNAP_N=$((SNAP_N + 1))
+    fi
+    n=$((n + 1))
+  done
+}
+
+snap_run() { # <stdin ファイル> [VAR=val ...]  → フック実行 + SNAP / SNAP_N
+  local in="$1" before i=0
+  shift
+  before="$(body_count "$CAP_DIR")"
+  timed_hook "$in" LOOP_MONITOR_PORT="$CAP_PORT" "$@"
+  if [ "$HOOK_MISSING" -eq 1 ]; then SNAP=""; SNAP_N=0; return 0; fi
+  snap_scan "$before"
+  while [ -z "$SNAP" ] && [ "$i" -lt "$SNAP_ITERS" ]; do sleep 0.02; i=$((i + 1)); snap_scan "$before"; done
+  if [ -n "$SNAP" ]; then sleep 0.25; snap_scan "$before"; fi   # 2 通目（重複送信）を拾うための猶予
+}
+
+snap_run_none() { # 届かないことの検査用（待ち時間を短くする）
+  local saved="$SNAP_ITERS"
+  SNAP_ITERS=60
+  snap_run "$@"
+  SNAP_ITERS="$saved"
+}
+
+mk_main() { jq -c --arg p "$2" '.transcript_path = $p' "$STDIN_DIR/Stop.json" >"$1"; }                  # <out> <transcript>
+mk_sub() { jq -c --arg p "$2" '.agent_transcript_path = $p' "$STDIN_DIR/SubagentStop.json" >"$1"; }     # <out> <transcript>
+run_main() { local f="$1"; shift; mk_main "$IN" "$f"; snap_run "$IN" "$@"; }   # <transcript> [env...]
+run_sub() { local f="$1"; shift; mk_sub "$IN" "$f"; snap_run "$IN" "$@"; }
+
+# transcript の行を作る（assistant）。usage は 4 種 + 5 分側の内訳が合う形
+asst_raw() { # <id> <model の JSON> <input> <output> <cache_creation> <cache_read>
+  jq -n -c --arg id "$1" --argjson m "$2" --argjson i "$3" --argjson o "$4" --argjson cc "$5" --argjson cr "$6" \
+    '{type:"assistant",message:{id:$id,model:$m,usage:{input_tokens:$i,output_tokens:$o,cache_creation_input_tokens:$cc,cache_read_input_tokens:$cr,cache_creation:{ephemeral_5m_input_tokens:$cc,ephemeral_1h_input_tokens:0}}}}'
+}
+asst() { asst_raw "$1" "\"$2\"" "$3" "$4" "$5" "$6"; }   # <id> <model> <in> <out> <cc> <cr>
+asst_u() { # <id> <model> <usage の JSON>
+  jq -n -c --arg id "$1" --arg m "$2" --argjson u "$3" '{type:"assistant",message:{id:$id,model:$m,usage:$u}}'
+}
+MODEL_OK="claude-haiku-4-5-20251001"
+
+ok_case() { # <ラベル> <jq 式（models などを取り出す）> <期待する JSON>
+  it "[US1] $1"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"; return; fi
+  assert_eq "$(jq -c "[.usage_status, ($2)]" "$SNAP" 2>/dev/null)|$SNAP_N" "[\"ok\",$3]|1"
+}
+unk_case() { # <ラベル> <理由>
+  it "[US1] $1 → unknown/$2 を 1 通だけ送り、models を持たない（部分合計を送らない）"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"; return; fi
+  assert_eq "$(jq -c '[.schema_version,.event,.usage_status,.unknown_reason,has("models")]' "$SNAP" 2>/dev/null)|$SNAP_N" "[2,\"UsageSnapshot\",\"unknown\",\"$2\",false]|1"
+}
+tr_path() { printf '%s/%s' "$US_DIR" "$1"; }
+
+# ══════════════════════════════════════════════
+suite "[US1] 集計: fixture と emitted の一致・帰属"
+# ══════════════════════════════════════════════
+
+run_main "$TR_DIR/main.jsonl"
+it "[US1] Stop + main.jsonl → emitted/UsageSnapshot.main-ok.json と値まで一致（1 通だけ）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.main-ok.json")|1"; fi
+check_quiet "Stop + main.jsonl" US4
+# 基本の 1 通すら届かない（送信されない）なら、以降の「届くはず」の検査は待たずに FAIL させる（Red の所要時間を抑える）
+if [ -z "$SNAP" ]; then
+  echo "       (UsageSnapshot が届かない。以降の待ち時間を短縮する)"
+  SNAP_ITERS=3
+fi
+
+run_sub "$TR_DIR/sub.jsonl"
+it "[US1] SubagentStop + sub.jsonl → emitted/UsageSnapshot.sub-ok.json と値まで一致（agent_id 付き・1 通だけ）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.sub-ok.json")|1"; fi
+check_quiet "SubagentStop + sub.jsonl" US4
+
+mk_main "$IN" "$TR_DIR/main.jsonl"
+jq -c '.agent_id = "aaaaaaaaaaaaaaaaa" | .agent_transcript_path = "/nonexistent/sub.jsonl"' "$IN" >"$IN.2"
+snap_run "$IN.2"
+it "[US1] Stop は stdin に agent_id があっても UsageSnapshot に付けず、transcript_path（メイン）を読む"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.main-ok.json")"; fi
+
+mk_sub "$IN" "$TR_DIR/sub.jsonl"
+jq -c --arg p "$TR_DIR/main.jsonl" '.transcript_path = $p' "$IN" >"$IN.2"
+snap_run "$IN.2"
+it "[US1] SubagentStop は agent_transcript_path（サブ）を読み、transcript_path（メイン）は読まない"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.sub-ok.json")"; fi
+
+mk_main "$IN" "$TR_DIR/main.jsonl"
+it "[US1] 元の Stop は schema_version 1 のまま（UsageSnapshot だけが 2）"
+emit "$IN"
+if [ -n "$BODY" ]; then assert_eq "$(jq -c '[.event,.schema_version]' "$BODY")" '["Stop",1]'; else fail "Stop が届かない"; fi
+
+# ══════════════════════════════════════════════
+suite "[US1] 集計: 重複排除・全 0 の行・非 assistant"
+# ══════════════════════════════════════════════
+
+for k in 2 3 4; do
+  f="$(tr_path "dup${k}.jsonl")"
+  { for _ in $(seq 1 "$k"); do asst msg_D "$MODEL_OK" 10 20 30 40; done; } >"$f"
+  run_main "$f"
+  ok_case "同じ message.id の行が ${k} 行 → 1 件として数える（水増ししない）" \
+    '[.models[0].message_count,.models[0].input_tokens,.models[0].output_tokens,.models[0].cache_creation_5m_input_tokens,.models[0].cache_read_input_tokens]' '[1,10,20,30,40]'
+done
+
+f="$(tr_path dup-nonadjacent.jsonl)"
+{ asst msg_P "$MODEL_OK" 1 2 3 4; asst msg_Q "$MODEL_OK" 10 20 30 40; asst msg_P "$MODEL_OK" 1 2 3 4; } >"$f"
+run_main "$f"
+ok_case "離れた位置の同じ id も 1 件に畳む（msg_P ×2 + msg_Q → 2 件）" \
+  '[.models[0].message_count,.models[0].input_tokens,.models[0].output_tokens]' '[2,11,22]'
+
+f="$(tr_path last-wins.jsonl)"
+{ asst msg_L "$MODEL_OK" 1 1 1 1; asst msg_L "$MODEL_OK" 5 7 9 11; } >"$f"
+run_main "$f"
+ok_case "同じ id で usage が違う → 最後の行を採る" \
+  '[.models[0].message_count,.models[0].input_tokens,.models[0].output_tokens,.models[0].cache_creation_5m_input_tokens,.models[0].cache_read_input_tokens]' '[1,5,7,9,11]'
+
+f="$(tr_path last-wins-rev.jsonl)"
+{ asst msg_L "$MODEL_OK" 5 7 9 11; asst msg_L "$MODEL_OK" 1 1 1 1; } >"$f"
+run_main "$f"
+ok_case "同じ id で usage が違う（順序を逆に）→ やはり最後の行（先頭を採る実装を弾く）" \
+  '[.models[0].input_tokens,.models[0].output_tokens]' '[1,1]'
+
+f="$(tr_path synthetic.jsonl)"
+{ asst msg_R "$MODEL_OK" 3 4 5 6; asst_raw msg_S '"<synthetic>"' 0 0 0 0; asst msg_Z claude-zero 0 0 0 0; } >"$f"
+run_main "$f"
+ok_case "usage が全て 0 の行（<synthetic> ほか）は数えず、モデルの一覧にも載せない" \
+  '[[.models[].model], .models[0].message_count]' '[["claude-haiku-4-5-20251001"],1]'
+
+f="$(tr_path only-zero.jsonl)"
+{ asst_raw msg_S '"<synthetic>"' 0 0 0 0; } >"$f"
+run_main "$f"
+ok_case "全 0 の行しか無い → ok で models は空配列（0 トークンが事実）" '.models' '[]'
+
+f="$(tr_path empty.jsonl)"
+: >"$f"
+run_main "$f"
+ok_case "空ファイル → ok で models は空配列" '.models' '[]'
+
+f="$(tr_path nonassistant.jsonl)"
+{
+  asst msg_R "$MODEL_OK" 3 4 5 6
+  printf '%s\n' '{"type":"user","message":{"id":"u1","usage":{"input_tokens":"bad"}}}'
+  printf '%s\n' '{"type":"Assistant","message":{"id":"u2","model":"claude-x","usage":{"input_tokens":99}}}'
+  printf '%s\n' '{"type":"cost-state","costUSD":1}'
+  printf '%s\n' '{"type":"assistant","message":{"id":"nousage","model":"claude-y"}}'
+  printf '%s\n' '{"type":"assistant","message":{"id":"strusage","model":"claude-y","usage":"x"}}'
+  printf '%s\n' '{"type":"assistant"}'
+} >"$f"
+run_main "$f"
+ok_case "type が文字列 assistant 以外の行（user / Assistant / cost-state）と usage を持たない行は無視する" \
+  '[[.models[].model], .models[0].message_count]' '[["claude-haiku-4-5-20251001"],1]'
+
+# ══════════════════════════════════════════════
+suite "[US1] 集計: キャッシュ書き込みの内訳"
+# ══════════════════════════════════════════════
+
+cache_case() { # <ラベル> <usage の JSON> <期待 [5m, 1h, split_unknown]>
+  local f
+  f="$(tr_path cache.jsonl)"
+  asst_u msg_K "$MODEL_OK" "$2" >"$f"
+  run_main "$f"
+  ok_case "$1" '[.models[0].cache_creation_5m_input_tokens,.models[0].cache_creation_1h_input_tokens,.models[0].cache_split_unknown]' "$3"
+}
+cache_case "内訳が合計と一致（30 + 70 = 100）→ そのまま使う" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":70}}' '[30,70,false]'
+cache_case "cache_creation オブジェクトが無い → 全量を 5 分側に入れ cache_split_unknown" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100}' '[100,0,true]'
+cache_case "内訳の片方（1h）が欠ける → 全量を 5 分側に入れ cache_split_unknown" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":30}}' '[100,0,true]'
+cache_case "内訳の片方（5m）が欠ける → 全量を 5 分側に入れ cache_split_unknown" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_1h_input_tokens":70}}' '[100,0,true]'
+cache_case "内訳の合計が不一致（30 + 60 ≠ 100）→ 全量を 5 分側に入れ cache_split_unknown" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":60}}' '[100,0,true]'
+cache_case "内訳の合計が 1 だけ不一致（50 + 51 ≠ 100）→ cache_split_unknown（境界）" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":50,"ephemeral_1h_input_tokens":51}}' '[100,0,true]'
+cache_case "1h だけに全量（0 + 100）→ 1h 側に入れる（一致している）" \
+  '{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":100}}' '[0,100,false]'
+
+f="$(tr_path split-or.jsonl)"
+{
+  asst_u msg_K1 "$MODEL_OK" '{"input_tokens":1,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":0}}'
+  asst_u msg_K2 "$MODEL_OK" '{"input_tokens":1,"cache_creation_input_tokens":10}'
+} >"$f"
+run_main "$f"
+ok_case "cache_split_unknown は 1 件でも合わないメッセージがあれば true（モデル内の OR）。合計は 5 分側へ" \
+  '[.models[0].cache_creation_5m_input_tokens,.models[0].cache_creation_1h_input_tokens,.models[0].cache_split_unknown]' '[110,0,true]'
+
+# ══════════════════════════════════════════════
+suite "[US1] 集計: 速度・地域のフラグ"
+# ══════════════════════════════════════════════
+
+flag_case() { # <ラベル> <usage に足す JSON> <期待 [fast, us, variant_unknown]>
+  local f u
+  f="$(tr_path flags.jsonl)"
+  u="$(jq -c --argjson x "$2" '{input_tokens:1,output_tokens:1,cache_creation_input_tokens:0,cache_read_input_tokens:0,cache_creation:{ephemeral_5m_input_tokens:0,ephemeral_1h_input_tokens:0}} + $x' <<<'{}')"
+  asst_u msg_F "$MODEL_OK" "$u" >"$f"
+  run_main "$f"
+  ok_case "$1" '[.models[0].fast_mode,.models[0].us_inference,.models[0].variant_unknown]' "$3"
+}
+flag_case "speed / inference_geo のキーが無い → 全て false" '{}' '[false,false,false]'
+flag_case "speed: null, inference_geo: null → 全て false" '{"speed":null,"inference_geo":null}' '[false,false,false]'
+flag_case "speed: standard, inference_geo: not_available → 全て false" '{"speed":"standard","inference_geo":"not_available"}' '[false,false,false]'
+flag_case "inference_geo: global → 通常（全て false）" '{"inference_geo":"global"}' '[false,false,false]'
+flag_case "speed: fast → fast_mode" '{"speed":"fast"}' '[true,false,false]'
+flag_case "inference_geo: us → us_inference" '{"inference_geo":"us"}' '[false,true,false]'
+flag_case "speed が未知の値（turbo）→ variant_unknown" '{"speed":"turbo"}' '[false,false,true]'
+flag_case "inference_geo が未知の値（eu）→ variant_unknown" '{"inference_geo":"eu"}' '[false,false,true]'
+flag_case "speed が文字列でない（数値）→ variant_unknown" '{"speed":1}' '[false,false,true]'
+
+f="$(tr_path flags-or.jsonl)"
+{
+  asst_u msg_F1 "$MODEL_OK" '{"input_tokens":1,"speed":"fast"}'
+  asst_u msg_F2 "$MODEL_OK" '{"input_tokens":1,"inference_geo":"us"}'
+  asst_u msg_F3 "$MODEL_OK" '{"input_tokens":1,"speed":"standard"}'
+} >"$f"
+run_main "$f"
+ok_case "フラグは同じモデルの全メッセージの OR（fast と us が別メッセージでも両方立つ）" \
+  '[.models[0].message_count,.models[0].fast_mode,.models[0].us_inference]' '[3,true,true]'
+
+# ══════════════════════════════════════════════
+suite "[US1] 集計: 不正な数値・JSON・上限"
+# ══════════════════════════════════════════════
+
+f="$(tr_path bad-num.jsonl)"
+for v in 'null' '"5"' '-1' '1.5' 'true' '[]' '{}'; do
+  asst_u msg_B "$MODEL_OK" "{\"input_tokens\":${v},\"output_tokens\":1}" >"$f"
+  run_main "$f"
+  unk_case "input_tokens が ${v}（非負整数でない）" invalid_usage
+done
+for key in output_tokens cache_creation_input_tokens cache_read_input_tokens; do
+  for v in 'null' '-1'; do
+    asst_u msg_B "$MODEL_OK" "{\"input_tokens\":1,\"${key}\":${v}}" >"$f"
+    run_main "$f"
+    unk_case "${key} が ${v}" invalid_usage
+  done
+done
+asst_u msg_B "$MODEL_OK" '{"input_tokens":1,"cache_creation_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":"x","ephemeral_1h_input_tokens":0}}' >"$f"
+run_main "$f"
+unk_case "cache_creation.ephemeral_5m_input_tokens が文字列" invalid_usage
+asst_u msg_B "$MODEL_OK" '{"input_tokens":1,"cache_creation_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":-1}}' >"$f"
+run_main "$f"
+unk_case "cache_creation.ephemeral_1h_input_tokens が負数" invalid_usage
+
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-haiku-4-5","usage":{"input_tokens":1.0,"output_tokens":2}}}' >"$f"
+run_main "$f"
+ok_case "1.0 は整数として受理する（input_tokens: 1.0 → 1。jq の版により 1.0 のまま出る実装もあるので数値として比べる）" '[(.models[0].input_tokens | floor),.models[0].output_tokens]' '[1,2]'
+
+asst_u msg_B "$MODEL_OK" '{"output_tokens":5}' >"$f"
+run_main "$f"
+ok_case "キーが無い数値は 0 として扱う（output_tokens だけ）" \
+  '[.models[0].input_tokens,.models[0].output_tokens,.models[0].cache_read_input_tokens,.models[0].cache_creation_5m_input_tokens]' '[0,5,0,0]'
+
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-x","usage":{"input_tokens":5}}}' >"$f"
+run_main "$f"
+unk_case "usage を持つが message.id が無い行（トークンが 0 超）" invalid_usage
+printf '%s\n' '{"type":"assistant","message":{"id":123,"model":"claude-x","usage":{"output_tokens":1}}}' >"$f"
+run_main "$f"
+unk_case "message.id が文字列でない行（トークンが 0 超）" invalid_usage
+printf '%s\n' '{"type":"assistant","message":{"id":"","model":"claude-x","usage":{"cache_read_input_tokens":1}}}' >"$f"
+run_main "$f"
+unk_case "message.id が空文字列の行（トークンが 0 超）" invalid_usage
+{ asst msg_R "$MODEL_OK" 3 4 5 6; printf '%s\n' '{"type":"assistant","message":{"model":"claude-x","usage":{"input_tokens":0,"output_tokens":0}}}'; } >"$f"
+run_main "$f"
+ok_case "usage を持つが message.id が無い行でも、トークンが全て 0 なら無視する" '[[.models[].model]]' '[["claude-haiku-4-5-20251001"]]'
+
+{ asst msg_R "$MODEL_OK" 3 4 5 6; printf '%s\n' '{broken json'; } >"$f"
+run_main "$f"
+unk_case "JSON として読めない行がある" parse_failed
+{ asst msg_R "$MODEL_OK" 3 4 5 6; printf '%s' '{"type":"assistant"'; } >"$f"
+run_main "$f"
+unk_case "途中で切れた最終行（改行なし）" parse_failed
+{ asst_u msg_B "$MODEL_OK" '{"input_tokens":-1}'; printf '%s\n' 'not json'; } >"$f"
+run_main "$f"
+unk_case "parse_failed と invalid_usage が両方該当 → parse_failed が優先" parse_failed
+
+{ asst_u msg_B "$MODEL_OK" '{"input_tokens":-1}'; for n in 1 2 3 4 5 6 7 8 9; do asst "msg_M$n" "claude-m$n" 1 1 0 0; done; } >"$f"
+run_main "$f"
+unk_case "invalid_usage と too_many_models が両方該当 → invalid_usage が優先" invalid_usage
+
+{ for n in 1 2 3 4 5 6 7 8 9; do asst "msg_M$n" "claude-m$n" 1 1 0 0; done; asst msg_BIG claude-m1 1000000000001 0 0 0; } >"$f"
+run_main "$f"
+unk_case "too_many_models と out_of_range が両方該当 → too_many_models が優先" too_many_models
+
+# out_of_range（キー別の上限 10^12）
+for key in input_tokens output_tokens cache_read_input_tokens; do
+  asst_u msg_B "$MODEL_OK" "{\"${key}\":1000000000001}" >"$f"
+  run_main "$f"
+  unk_case "${key} が 10^12 + 1（1 行で上限超過）" out_of_range
+done
+asst_u msg_B "$MODEL_OK" '{"cache_creation_input_tokens":1000000000001,"cache_creation":{"ephemeral_5m_input_tokens":1000000000001,"ephemeral_1h_input_tokens":0}}' >"$f"
+run_main "$f"
+unk_case "cache_creation_5m が 10^12 + 1" out_of_range
+{ asst msg_B1 "$MODEL_OK" 600000000000 0 0 0; asst msg_B2 "$MODEL_OK" 600000000000 0 0 0; } >"$f"
+run_main "$f"
+unk_case "2 行の合計が 1.2 × 10^12（合計値で上限判定）" out_of_range
+{ asst msg_B1 "$MODEL_OK" 600000000000 0 0 0; asst msg_B2 "$MODEL_OK" 400000000000 0 0 0; } >"$f"
+run_main "$f"
+ok_case "合計がちょうど 10^12 → ok（上限ちょうどは通す）" '[.models[0].input_tokens]' '[1000000000000]'
+
+# モデル数
+f="$(tr_path models9.jsonl)"
+{ for n in 1 2 3 4 5 6 7 8 9; do asst "msg_M$n" "claude-m$n" 1 1 0 0; done; } >"$f"
+run_main "$f"
+unk_case "異なるモデルが 9 種" too_many_models
+
+f="$(tr_path models8.jsonl)"
+{ for n in 8 7 6 5 4 3 2 1; do asst "msg_M$n" "claude-m$n" 1 1 0 0; done; } >"$f"
+run_main "$f"
+ok_case "異なるモデルが 8 種 → ok（境界）。model の昇順で並ぶ" '[.models | length, [.[].model]]' '[8,["claude-m1","claude-m2","claude-m3","claude-m4","claude-m5","claude-m6","claude-m7","claude-m8"]]'
+
+f="$(tr_path models-bytes-order.jsonl)"
+{ asst msg_1 claude-b 1 1 0 0; asst msg_2 Zeta 1 1 0 0; asst msg_3 claude-a 1 1 0 0; asst msg_4 a.b_c-1 1 1 0 0; } >"$f"
+run_main "$f"
+ok_case "並び順はバイト順の昇順（大文字 → 小文字）" '[.models[].model]' '["Zeta","a.b_c-1","claude-a","claude-b"]'
+
+# モデル ID の unknown 化
+f="$(tr_path model-unknown.jsonl)"
+{
+  asst_raw msg_U1 "$(jq -n --arg m 'bad model' '$m')" 1 10 0 0
+  asst_raw msg_U2 "$(jq -n --arg m $'a\nb' '$m')" 2 20 0 0
+  asst_raw msg_U3 "$(jq -n --arg m "$(printf 'a%.0s' $(seq 1 65))" '$m')" 4 40 0 0
+  asst_raw msg_U4 '""' 8 80 0 0
+  asst_raw msg_U5 'null' 16 160 0 0
+  asst_raw msg_U6 '123' 32 320 0 0
+  asst_raw msg_U7 '"SNTMODEL/../x"' 64 640 0 0
+  asst msg_U8 "$MODEL_OK" 128 1280 0 0
+} >"$f"
+run_main "$f"
+ok_case "許可外のモデル ID（空白・改行・65 バイト・空・null・数値・'/'）は unknown に合算し、1 要素にまとめる" \
+  '[[.models[].model], (.models[] | select(.model == "unknown") | [.message_count,.input_tokens,.output_tokens])]' '[["claude-haiku-4-5-20251001","unknown"],[7,127,1270]]'
+
+f="$(tr_path model-nokey.jsonl)"
+{ printf '%s\n' '{"type":"assistant","message":{"id":"msg_N1","usage":{"input_tokens":3,"output_tokens":4}}}'; } >"$f"
+run_main "$f"
+ok_case "model キー自体が無い行は unknown" '[[.models[].model]]' '[["unknown"]]'
+
+f="$(tr_path model-64.jsonl)"
+M64="$(printf 'a%.0s' $(seq 1 64))"
+{ asst msg_6 "$M64" 1 1 0 0; } >"$f"
+run_main "$f"
+ok_case "64 バイトちょうどのモデル ID はそのまま通す（境界）" '[[.models[].model | length]]' '[[64]]'
+
+f="$(tr_path model-unknown-count.jsonl)"
+{ for n in 1 2 3 4 5 6 7; do asst "msg_M$n" "claude-m$n" 1 1 0 0; done; asst msg_X1 "bad one" 1 1 0 0; asst msg_X2 "bad two" 1 1 0 0; } >"$f"
+run_main "$f"
+ok_case "unknown に落ちた複数のモデルは 1 種として数える（7 種 + unknown = 8 種 → ok）" '[.models | length]' '[8]'
+
+# 部分合計を送らない
+f="$(tr_path partial.jsonl)"
+{ asst msg_R "$MODEL_OK" 3 4 5 6; asst msg_R2 "$MODEL_OK" 30 40 50 60; asst_u msg_BAD "$MODEL_OK" '{"output_tokens":-3}'; } >"$f"
+run_main "$f"
+unk_case "正常な行 2 件 + 不正な行 1 件 → 正常分だけの部分合計を送らない" invalid_usage
+
+# ══════════════════════════════════════════════
+suite "[US2] 読み取り: パスの判定（no_path）"
+# ══════════════════════════════════════════════
+
+nopath_case() { # <ラベル> <Stop の stdin を作る jq 式>
+  jq -c "$2" "$STDIN_DIR/Stop.json" >"$IN"
+  snap_run "$IN"
+  unk_case "Stop: $1" no_path
+}
+nopath_case "transcript_path のキーが無い" 'del(.transcript_path)'
+nopath_case "transcript_path が数値" '.transcript_path = 123'
+nopath_case "transcript_path が null" '.transcript_path = null'
+nopath_case "transcript_path が空文字列" '.transcript_path = ""'
+nopath_case "transcript_path が相対パス" '.transcript_path = "rel/main.jsonl"'
+nopath_case "transcript_path が C0 制御文字（\\u0001）を含む" '.transcript_path = "/tmp/a\u0001b.jsonl"'
+nopath_case "transcript_path が改行を含む" '.transcript_path = "/tmp/a\nb.jsonl"'
+nopath_case "transcript_path が DEL（\\u007f）を含む" '.transcript_path = "/tmp/a\u007fb.jsonl"'
+
+LONGPATH="$("$PERL_BIN" -e 'print "/" . ("a" x 4096)')"
+jq -c --arg p "$LONGPATH" '.transcript_path = $p' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run "$IN"
+unk_case "Stop: transcript_path が 4097 バイト（上限 4096 超）" no_path
+
+LONGPATH="$("$PERL_BIN" -e 'print "/" . ("a" x 4095)')"
+jq -c --arg p "$LONGPATH" '.transcript_path = $p' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run "$IN"
+unk_case "Stop: transcript_path が 4096 バイトちょうど（形式は有効。存在しないので read_failed）" read_failed
+
+jq -c 'del(.agent_transcript_path)' "$STDIN_DIR/SubagentStop.json" >"$IN"
+jq -c --arg p "$TR_DIR/main.jsonl" '.transcript_path = $p' "$IN" >"$IN.2"
+snap_run "$IN.2"
+unk_case "SubagentStop: agent_transcript_path が無い（transcript_path が有効でも流用しない）" no_path
+
+jq -c --arg p "$TR_DIR/sub.jsonl" 'del(.transcript_path) | .agent_transcript_path = $p' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run "$IN"
+unk_case "Stop: transcript_path が無い（agent_transcript_path が有効でも流用しない）" no_path
+
+# ══════════════════════════════════════════════
+suite "[US2] 読み取り: symlink・通常ファイル以外・存在しない"
+# ══════════════════════════════════════════════
+
+cp "$TR_DIR/sub.jsonl" "$US_DIR/real.jsonl"
+ln -s "$US_DIR/real.jsonl" "$US_DIR/link-to-file.jsonl"
+ln -s "$US_DIR/does-not-exist.jsonl" "$US_DIR/link-dangling.jsonl"
+mkdir -p "$US_DIR/realdir"
+ln -s "$US_DIR/realdir" "$US_DIR/link-to-dir"
+ln -s "$US_DIR/real.jsonl" "$US_DIR/link-chain1.jsonl"
+ln -s "$US_DIR/link-chain1.jsonl" "$US_DIR/link-chain2.jsonl"
+
+for l in link-to-file.jsonl link-dangling.jsonl link-to-dir link-chain2.jsonl; do
+  run_main "$US_DIR/$l"
+  unk_case "Stop: 最終要素が symlink（${l}）" symlink
+done
+run_sub "$US_DIR/link-to-file.jsonl"
+unk_case "SubagentStop: 最終要素が symlink" symlink
+
+# 内容の流出も起きない（symlink 先の内容が数値として載らない）
+it "[US2] symlink を拒否した結果に、リンク先の集計値（トークン数）が一切載らない"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else
+  case "$(cat "$SNAP")" in *14242*|*'"models"'*) fail "リンク先の内容が載った: $(cat "$SNAP")" ;; *) pass ;; esac
+fi
+
+mkdir -p "$US_DIR/realparent"
+cp "$TR_DIR/sub.jsonl" "$US_DIR/realparent/sub.jsonl"
+ln -s "$US_DIR/realparent" "$US_DIR/linkparent"
+run_sub "$US_DIR/linkparent/sub.jsonl"
+it "[US2] 親ディレクトリが symlink でも拒否しない（最終要素のみ判定。限界として security.md に記録）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.sub-ok.json")"; fi
+
+run_main "$US_DIR/realdir"
+unk_case "Stop: ディレクトリ" not_regular_file
+
+FIFO="$US_DIR/fifo.jsonl"
+mkfifo "$FIFO"
+run_main "$FIFO"
+unk_case "Stop: FIFO（開かずに判定する）" not_regular_file
+it "[US2] FIFO でもフックの前景は 1 秒未満で終わり、ハングしない"
+if awk -v t="$T_ELAPSED" 'BEGIN { exit !(t < 1) }'; then pass; else fail "前景が ${T_ELAPSED} 秒"; fi
+check_quiet "FIFO" US4
+# 開いたまま待っている実装がいた場合のための後始末（RDWR で開けば待ちが解ける）
+exec 8<>"$FIFO"
+exec 8>&-
+
+run_main "$US_DIR/no-such-file.jsonl"
+unk_case "Stop: 存在しないファイル" read_failed
+
+it "[US2] 読み取り権限が無いファイル → read_failed"
+if [ "$(id -u)" = "0" ]; then
+  echo "       (root では権限拒否を再現できないので省略)"; pass
+else
+  cp "$TR_DIR/sub.jsonl" "$US_DIR/noperm.jsonl"
+  chmod 000 "$US_DIR/noperm.jsonl"
+  run_main "$US_DIR/noperm.jsonl"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+  else assert_eq "$(jq -c '[.usage_status,.unknown_reason,has("models")]' "$SNAP")|$SNAP_N" '["unknown","read_failed",false]|1'; fi
+  chmod 600 "$US_DIR/noperm.jsonl"
+fi
+
+# ══════════════════════════════════════════════
+suite "[US5] 判定と読み取りの間の差し替え競合: パスは 1 回だけ開き、fd 上で判定する（retry 2）"
+# ══════════════════════════════════════════════
+# 差し替え競合そのものは決定的に再現できない。名前での事前判定が無くても fd 上の判定だけで
+# 拒否できること（静的検査 + 事前判定を素通りする入力の動作）を固定する。
+#
+# 契約（Coder へ）:
+#   perl の sysopen($fh, $p, O_RDONLY|O_NONBLOCK|O_NOFOLLOW) を 1 回だけ → 失敗が ELOOP なら symlink、
+#   不在は read_failed（既存どおり）、その他の失敗も read_failed。stat($fh) が通常ファイルでなければ
+#   not_regular_file、サイズが上限超なら too_large、sysread で上限 + 1 バイトまで読み超えたら too_large。
+#   読んだ内容は stdout 経由で jq へ（argv・一時ファイルに載せない）。perl / Fcntl が無ければ読まず read_failed。
+
+HOOK_CODE="$WORK/hook-code.txt"
+grep -v '^[[:space:]]*#' "$HOOK" >"$HOOK_CODE" 2>/dev/null
+
+static_absent() { # <ラベル> <ERE>
+  it "[US5] 静的: フック本体に ${1} が残っていない"
+  if [ ! -s "$HOOK_CODE" ]; then fail "フックが読めない"; return; fi
+  if grep -Eq -- "$2" "$HOOK_CODE"; then fail "残っている: $(grep -En -- "$2" "$HOOK_CODE" | head -3)"; else pass; fi
+}
+static_present() { # <ラベル> <ERE>
+  it "[US5] 静的: フック本体に ${1} がある"
+  if grep -Eq -- "$2" "$HOOK_CODE" 2>/dev/null; then pass; else fail "見つからない: $2"; fi
+}
+static_absent 'transcript パスの入力リダイレクト（<"$tpath"）' '<[[:space:]]*"?\$\{?tpath'
+static_absent 'wc -c（サイズを名前で開いて数える）' '(^|[^[:alnum:]_])wc[[:space:]]+-c'
+static_absent 'head -c（名前で開いて読む）' '(^|[^[:alnum:]_])head[[:space:]]+-c'
+static_absent 'パスを名前で判定する [ -L|-e|-f "$tpath" ]' '\[[[:space:]]+!?[[:space:]]*-[LefdpSb][[:space:]]+"?\$\{?tpath'
+static_present 'perl の sysopen' 'sysopen'
+static_present 'sysopen の O_NOFOLLOW' 'O_NOFOLLOW'
+static_present 'sysopen の O_NONBLOCK' 'O_NONBLOCK'
+# sysopen と同じ文: 改行を空白に潰した上で `sysopen[^;]*<フラグ>` を見る。`[^;]*` は perl の文区切り `;` に依存し、
+# sysopen の呼び出しと別の文にあるフラグ（他所の定数参照など）を拾わない。引数に `;` を書く変更をすると誤って落ちる。
+sysopen_flag_same_stmt() { # <フラグ> ... （全てが同じ sysopen 文に要る）
+  local f
+  for f in "$@"; do
+    tr '\n' ' ' <"$HOOK_CODE" | grep -Eq "sysopen[^;]*${f}" || return 1
+  done
+}
+it "[US5] 静的: O_NOFOLLOW と O_NONBLOCK が sysopen と同じ文に指定されている（取り違えの防止）"
+if sysopen_flag_same_stmt O_NOFOLLOW O_NONBLOCK; then pass
+else fail "sysopen の引数に O_NOFOLLOW と O_NONBLOCK が両方無い"; fi
+it "[US5] 静的: O_NOCTTY が sysopen と同じ文に指定されている（制御端末の奪取防止）"
+if sysopen_flag_same_stmt O_NOCTTY; then pass
+else fail "sysopen の引数に O_NOCTTY が無い"; fi
+static_present 'fd 上の stat（stat($fh) 等）' 'stat[[:space:]]*\(?[[:space:]]*\$?[A-Za-z_]*(fh|FH|F)\b|-f[[:space:]]+\$?[A-Za-z_]*(fh|FH)\b|fstat'
+
+# perl の入出力層を変える環境変数が利用者側にあっても、読み取りが壊れない（G5 低指摘）。
+# PERL_UNICODE / PERLIO=:utf8 が sysopen の fd に :utf8 層を付け、sysread が致命的エラー → read_failed になっていた。
+run_main "$TR_DIR/main.jsonl" X_UNUSED=1
+PERLENV_BASE="$(jq -S -c . "$SNAP" 2>/dev/null)"
+for penv in 'PERL_UNICODE=SDA' 'PERL_UNICODE=' 'PERL_UNICODE=D' 'PERLIO=:utf8'; do
+  run_main "$TR_DIR/main.jsonl" "$penv"
+  it "[US5] 環境に ${penv} があっても ok で、数値が環境変数なしと同一（read_failed にならない）"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+  else
+    assert_eq "$(jq -c '.usage_status' "$SNAP")|$(jq -S -c . "$SNAP")|$SNAP_N" "\"ok\"|${PERLENV_BASE}|1"
+  fi
+done
+
+# 同じ入力で UsageSnapshot が届いてから 1.5 秒後に、フックと同じセッション（pgid）に残る生きたプロセス数を LEAK_N に。
+# 残っていれば kill して後始末する。
+LEAK_N=0
+leak_run() { # <stdin ファイル>
+  local in="$1" before i=0 pg alive
+  before="$(body_count "$CAP_DIR")"
+  pg="$(env LOOP_MONITOR_PORT="$CAP_PORT" "$PERL_BIN" -MPOSIX -e '
+    my $p = fork();
+    if ($p == 0) { setsid(); open(STDIN, "<", $ARGV[0]) or exit 1; open(STDOUT, ">", "/dev/null"); open(STDERR, ">", "/dev/null"); exec @ARGV[1..$#ARGV]; exit 1 }
+    print $p; waitpid($p, 0);
+  ' "$in" "$BASH_BIN" "$HOOK" 2>/dev/null)"
+  snap_scan "$before"
+  while [ -z "$SNAP" ] && [ "$i" -lt "$SNAP_ITERS_US5" ]; do sleep 0.02; i=$((i + 1)); snap_scan "$before"; done
+  sleep 1.5
+  LEAK_N=0
+  case "$pg" in ''|*[!0-9]*) return 0 ;; esac
+  alive="$(ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$pg" '$1 == g && $2 !~ /^Z/ { n++ } END { print n + 0 }')"
+  LEAK_N="$alive"
+  if [ "$alive" -gt 0 ]; then kill -KILL -- "-$pg" 2>/dev/null; fi
+}
+SNAP_ITERS_US5=150   # 3 秒
+
+US5_FIFO="$US_DIR/us5-fifo.jsonl"
+mkfifo "$US5_FIFO"
+mk_main "$IN" "$US5_FIFO"
+leak_run "$IN"
+unk_case "Stop: FIFO を直接渡してもハングせず（3 秒以内に届く）" not_regular_file
+it "[US5] FIFO: 背景の読み取りプロセスが残らない（open でブロックしたままの bash が居ない）"
+if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
+exec 9<>"$US5_FIFO"; exec 9>&-   # 念のため待ちを解く
+
+ln -s /dev/zero "$US_DIR/us5-link-zero"
+mk_main "$IN" "$US_DIR/us5-link-zero"
+leak_run "$IN"
+unk_case "Stop: /dev/zero への symlink（辿って無制限に読まない）" symlink
+it "[US5] /dev/zero への symlink: 背景の読み取りプロセスが残らない"
+if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
+mk_sub "$IN" "$US_DIR/us5-link-zero"
+leak_run "$IN"
+unk_case "SubagentStop: /dev/zero への symlink" symlink
+
+mk_main "$IN" /dev/zero
+leak_run "$IN"
+unk_case "Stop: /dev/zero そのもの（キャラクタデバイス）" not_regular_file
+it "[US5] /dev/zero そのもの: 背景の読み取りプロセスが残らない"
+if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
+mk_sub "$IN" /dev/zero
+leak_run "$IN"
+unk_case "SubagentStop: /dev/zero そのもの" not_regular_file
+
+# ══════════════════════════════════════════════
+suite "[US2] 読み取り: サイズ上限（LOOP_MONITOR_MAX_TRANSCRIPT_BYTES）"
+# ══════════════════════════════════════════════
+
+ENV_MAX=LOOP_MONITOR_MAX_TRANSCRIPT_BYTES
+SUB_SIZE="$(wc -c <"$TR_DIR/sub.jsonl" | tr -d ' ')"
+MAIN_SIZE="$(wc -c <"$TR_DIR/main.jsonl" | tr -d ' ')"
+
+run_sub "$TR_DIR/sub.jsonl" "$ENV_MAX=$SUB_SIZE"
+it "[US3] 上限がファイルサイズちょうど（${SUB_SIZE} バイト）→ ok"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.sub-ok.json")|1"; fi
+
+run_sub "$TR_DIR/sub.jsonl" "$ENV_MAX=$((SUB_SIZE - 1))"
+unk_case "上限がファイルサイズより 1 バイト小さい（$((SUB_SIZE - 1)) バイト）" too_large
+
+run_main "$TR_DIR/main.jsonl" "$ENV_MAX=$MAIN_SIZE"
+it "[US3] Stop: 上限がファイルサイズちょうど（${MAIN_SIZE} バイト）→ ok"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.main-ok.json")|1"; fi
+
+run_main "$TR_DIR/main.jsonl" "$ENV_MAX=$((MAIN_SIZE - 1))"
+it "[US3] Stop: 上限が 1 バイト小さい → too_large（emitted/UsageSnapshot.unknown.json と一致）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$EMITTED_DIR/UsageSnapshot.unknown.json")|1"; fi
+
+run_main "$TR_DIR/main.jsonl" "$ENV_MAX=1"
+unk_case "上限 1 バイト" too_large
+
+# 不正値は無視して既定値（既定値はサイズ上限の実測後に決まる。ここでは小さい fixture が通ることだけを見る）
+for bad in '' '0' '-1' '+5' '007' 'abc' '1e3' '0x10' '1.5' '5 ' ' 5' $'5\n6' '００５'; do
+  label="$(printf '%s' "$bad" | tr '\n' '~')"
+  run_sub "$TR_DIR/sub.jsonl" "$ENV_MAX=$bad"
+  it "[US3] 上限の環境変数が不正値（'${label}'）→ 無視して既定値（sub.jsonl は ok のまま）"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+  else assert_eq "$(jq -c '.usage_status' "$SNAP")|$SNAP_N" '"ok"|1'; fi
+done
+
+# 既定値より大きくはできない（疎ファイルで、既定値を十分に超えるサイズを作る）
+SPARSE="$US_DIR/sparse.jsonl"
+"$PERL_BIN" -e 'open(F, ">", $ARGV[0]) or exit 1; truncate(F, $ARGV[1]) or exit 1; close(F);' "$SPARSE" $((512 * 1024 * 1024))
+for big in 1000000000000000 99999999999999999999999999 ''; do
+  if [ -n "$big" ]; then envarg="$ENV_MAX=$big"; else envarg="X_UNUSED=1"; fi
+  run_main "$SPARSE" "$envarg"
+  unk_case "512MiB の疎ファイル、上限の環境変数 '${big:-未設定}' → 既定値は超えられず too_large（読み取り量を増やす向きには使えない）" too_large
+done
+check_quiet "疎ファイル" US4
+
+# ══════════════════════════════════════════════
+suite "[US3] 安全: 番兵・パス・プロンプトが送信ボディにも argv にも出ない"
+# ══════════════════════════════════════════════
+# transcript には SNT 始まりの番兵（本文・プロンプト・パス・id・ブランチ等）が入っている。
+# 送信ボディに載ってよいのは数値・真偽値・列挙値・許可文字を満たしたモデル ID だけ。
+
+cp "$TR_DIR/main.jsonl" "$PATHSENT/main.jsonl"
+ALOG="$WORK/us-argv.log"; : >"$ALOG"
+jq -c --arg p "$PATHSENT/main.jsonl" '.transcript_path = $p | .session_id = "ARGVSESS-US1" | .last_assistant_message = "ARGVLAST"' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run "$IN" PATH="$SHIM_PATH" SHIM_LOG="$ALOG"
+
+it "[US3] 観測が送信を壊していない（ラッパー経由でも UsageSnapshot が届き、内容が正しい）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -c '[.usage_status,(.models|length),.models[0].message_count]' "$SNAP")" '["ok",1,3]'; fi
+
+body_text=""; [ -n "$SNAP" ] && body_text="$(cat "$SNAP")"
+for s in SNT PATHSENT msg_ ARGVLAST; do
+  it "[US3] UsageSnapshot のボディに '${s}' が現れない"
+  if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+  else case "$body_text" in *"$s"*) fail "ボディに現れた: $body_text" ;; *) pass ;; esac; fi
+done
+
+it "[US3] 自己診断: argv の記録に jq と curl の起動が残っている（観測が効いている）"
+if grep -qF "CMD curl" "$ALOG" && grep -qF "CMD jq" "$ALOG"; then pass; else fail "記録が無い"; fi
+
+hits=""
+for s in SNT PATHSENT msg_ ARGVLAST ARGVSESS SNTPROMPT SNTTEXT SNTBRANCH SNTUUID; do
+  if grep -qF -- "$s" "$ALOG"; then hits="$hits $s"; fi
+done
+it "[US3] jq / curl / その他の子プロセスの argv に transcript の番兵・パス・プロンプトが現れない"
+assert_eq "$(echo "$hits" | tr -s ' ')" ""
+
+it "[US3] argv に transcript_path の値（ディレクトリ名）が現れない"
+if grep -qF -- "$PATHSENT" "$ALOG"; then fail "パスが argv に載った"; else pass; fi
+
+: >"$ALOG"
+jq -c --arg p "$PATHSENT/main.jsonl" '.agent_transcript_path = $p | .agent_id = "ARGVAGENT1"' "$STDIN_DIR/SubagentStop.json" >"$IN"
+snap_run "$IN" PATH="$SHIM_PATH" SHIM_LOG="$ALOG"
+it "[US3] SubagentStop でも argv に番兵・パス・agent_id が現れない"
+hits=""
+for s in SNT PATHSENT msg_ ARGVAGENT1; do
+  if grep -qF -- "$s" "$ALOG"; then hits="$hits $s"; fi
+done
+assert_eq "$(echo "$hits" | tr -s ' ')" ""
+
+it "[US3] 一時ファイルを作らない（TMPDIR の差分が空）"
+TD="$WORK/us-tmpdir"; mkdir -p "$TD"
+mk_main "$IN" "$TR_DIR/main.jsonl"
+snap_run "$IN" TMPDIR="$TD"
+assert_eq "$(find "$TD" -mindepth 1 | wc -l | tr -d ' ')" "0"
+
+# 全ての UsageSnapshot（unknown を含む）でパスが載らない
+run_main "$US_DIR/link-to-file.jsonl"
+it "[US3] unknown の UsageSnapshot にもパスが載らない（symlink のケース）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else case "$(cat "$SNAP")" in */*|*"$US_DIR"*) fail "パスが載った: $(cat "$SNAP")" ;; *) pass ;; esac; fi
+
+# モデル ID: 番兵入りは許可文字を満たさないので unknown。満たす場合だけそのまま載る
+f="$(tr_path model-sentinel.jsonl)"
+{ asst msg_1 "SNTMODEL evil" 1 1 0 0; asst msg_2 "SNTMODEL/path" 1 1 0 0; asst msg_3 "SNT-OK.model_1" 1 1 0 0; } >"$f"
+run_main "$f"
+it "[US3] 許可文字を外れたモデル ID（番兵入り）は unknown にまとめ、番兵はボディに出ない。許可文字のみなら載る"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -c '[.models[].model]' "$SNAP")" '["SNT-OK.model_1","unknown"]'; fi
+
+# ══════════════════════════════════════════════
+suite "[US3] 安全: agent_id と session_id の検証（属人性）"
+# ══════════════════════════════════════════════
+
+A65="\"$("$PERL_BIN" -e 'print "a" x 65')\""
+for badid in '"a/b"' '""' '123' 'null' '"aaaa bbbb"' "$A65"; do
+  label="$(printf '%s' "$badid" | head -c 20)"
+  jq -c --argjson a "$badid" --arg p "$TR_DIR/sub.jsonl" '.agent_id = $a | .agent_transcript_path = $p' "$STDIN_DIR/SubagentStop.json" >"$IN"
+  snap_run_none "$IN"
+  it "[US3] SubagentStop: agent_id が検証に落ちる（${label}）→ UsageSnapshot ごと送らない（メインに付けない）"
+  assert_eq "$SNAP_N" "0"
+done
+
+jq -c --arg p "$TR_DIR/sub.jsonl" 'del(.agent_id) | .agent_transcript_path = $p' "$STDIN_DIR/SubagentStop.json" >"$IN"
+snap_run_none "$IN"
+it "[US3] SubagentStop: agent_id が無い → UsageSnapshot を送らない"
+assert_eq "$SNAP_N" "0"
+
+jq -c --arg p "$TR_DIR/main.jsonl" '.agent_id = "a/b" | .transcript_path = $p' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run "$IN"
+it "[US3] Stop: stdin の agent_id が不正でも、メインの UsageSnapshot は agent_id 無しで送る"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -c 'has("agent_id")' "$SNAP")" "false"; fi
+
+for badsid in '"a/b"' '""' '123' 'null' '"s s"'; do
+  jq -c --argjson s "$badsid" --arg p "$TR_DIR/main.jsonl" '.session_id = $s | .transcript_path = $p' "$STDIN_DIR/Stop.json" >"$IN"
+  snap_run_none "$IN"
+  it "[US3] Stop: session_id が検証に落ちる（${badsid}）→ UsageSnapshot を送らない"
+  assert_eq "$SNAP_N" "0"
+done
+
+jq -c 'del(.session_id)' "$STDIN_DIR/Stop.json" >"$IN"
+snap_run_none "$IN"
+it "[US3] Stop: session_id が無い → UsageSnapshot を送らない"
+assert_eq "$SNAP_N" "0"
+
+# 他のイベントは UsageSnapshot を生まない
+for ev in SessionStart PreToolUse.bash PostToolUse.read UserPromptSubmit SubagentStart PreCompact; do
+  jq -c --arg p "$TR_DIR/main.jsonl" '.transcript_path = $p | .agent_transcript_path = $p' "$STDIN_DIR/${ev}.json" >"$IN"
+  snap_run_none "$IN"
+  it "[US3] ${ev}: transcript_path があっても UsageSnapshot を送らない（Stop / SubagentStop だけ）"
+  assert_eq "$SNAP_N" "0"
+done
+
+# ══════════════════════════════════════════════
+suite "[US4] 契約: 無音・LOOP_MONITOR=0・サーバ停止・前景 1 秒"
+# ══════════════════════════════════════════════
+
+mk_main "$IN" "$TR_DIR/main.jsonl"
+start_stub capture
+ZU_DIR="$S_DIR"; ZU_PORT="$S_PORT"
+timed_hook "$IN" LOOP_MONITOR=0 LOOP_MONITOR_PORT="$ZU_PORT"
+check_quiet "LOOP_MONITOR=0 + Stop + transcript" US4
+mk_sub "$IN" "$TR_DIR/sub.jsonl"
+timed_hook "$IN" LOOP_MONITOR=0 LOOP_MONITOR_PORT="$ZU_PORT"
+check_quiet "LOOP_MONITOR=0 + SubagentStop + transcript" US4
+sleep 0.8
+it "[US4] LOOP_MONITOR=0 なら UsageSnapshot も含めて接続 0 件"
+assert_eq "$(conn_count "$ZU_DIR")" "0"
+
+ULOG="$WORK/us-zero.log"; : >"$ULOG"
+timed_hook "$IN" PATH="$SHIM_PATH" SHIM_LOG="$ULOG" LOOP_MONITOR=0 LOOP_MONITOR_PORT="$ZU_PORT"
+sleep 0.3
+it "[US4] LOOP_MONITOR=0 なら jq も curl も起動しない（transcript を読む処理も走らない）"
+assert_eq "$(grep -c '^CMD ' "$ULOG" | tr -d ' ')" "0"
+
+start_stub proxy
+DOWN_PORT="$S_PORT"; stop_stub "$S_PID"
+mk_main "$IN" "$TR_DIR/main.jsonl"
+timed_hook "$IN" LOOP_MONITOR_PORT="$DOWN_PORT"
+check_quiet "サーバ停止中 + Stop + transcript" US4
+it "[US4] サーバ停止中でも前景は 1 秒未満"
+if awk -v t="$T_ELAPSED" 'BEGIN { exit !(t < 1) }'; then pass; else fail "前景が ${T_ELAPSED} 秒"; fi
+mk_sub "$IN" "$TR_DIR/sub.jsonl"
+timed_hook "$IN" LOOP_MONITOR_PORT="$DOWN_PORT"
+check_quiet "サーバ停止中 + SubagentStop + transcript" US4
+
+start_stub hang
+HANG_U_PORT="$S_PORT"; HANG_U_PID="$S_PID"
+mk_main "$IN" "$TR_DIR/main.jsonl"
+timed_hook "$IN" LOOP_MONITOR_PORT="$HANG_U_PORT"
+check_quiet "応答しないサーバ + Stop + transcript" US4
+it "[US4] 応答しないサーバでも前景は 1 秒未満（集計・送信は背景）"
+if awk -v t="$T_ELAPSED" 'BEGIN { exit !(t < 1) }'; then pass; else fail "前景が ${T_ELAPSED} 秒"; fi
+stop_stub "$HANG_U_PID"
+
+# 10MB 級の transcript（テスト内で生成。コミットしない）
+BIG="$US_DIR/big.jsonl"
+"$PERL_BIN" -e '
+  open(F, ">", $ARGV[0]) or exit 1;
+  my ($size, $i) = (0, 0);
+  my $pad = "x" x 3000;
+  while ($size < 10.5 * 1024 * 1024) {
+    $i++;
+    my $id = "msg_G" . int($i / 2);
+    my $line = qq({"type":"assistant","message":{"id":"$id","model":"claude-haiku-4-5","content":[{"type":"text","text":"$pad"}],"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":0}}}}\n);
+    print F $line;
+    $size += length($line);
+  }
+  close(F);' "$BIG"
+
+it "[US4] 自己診断: 生成した transcript は 10MB 以上"
+if [ "$(wc -c <"$BIG" | tr -d ' ')" -ge 10485760 ]; then pass; else fail "小さすぎる"; fi
+
+start_stub proxy
+DOWN2_PORT="$S_PORT"; stop_stub "$S_PID"
+mk_main "$IN" "$BIG"
+timed_hook "$IN" LOOP_MONITOR_PORT="$DOWN2_PORT"
+check_quiet "10MB 級 transcript + サーバ停止中" US4
+it "[US4] 10MB 級 transcript + サーバ停止中: 前景は 1 秒未満"
+if awk -v t="$T_ELAPSED" 'BEGIN { exit !(t < 1) }'; then pass; else fail "前景が ${T_ELAPSED} 秒"; fi
+
+SNAP_SAVED_ITERS="$SNAP_ITERS"
+if [ "$SNAP_ITERS" -gt 3 ]; then SNAP_ITERS=500; fi   # 背景の集計は最大 10 秒待つ
+snap_run "$IN"
+SNAP_ITERS="$SNAP_SAVED_ITERS"
+check_quiet "10MB 級 transcript + 稼働中のサーバ" US4
+it "[US4] 10MB 級 transcript + 稼働中のサーバ: 前景は 1 秒未満"
+if awk -v t="$T_ELAPSED" 'BEGIN { exit !(t < 1) }'; then pass; else fail "前景が ${T_ELAPSED} 秒"; fi
+it "[US4] 10MB 級 transcript の UsageSnapshot は ok か unknown のどちらかで 1 通だけ届く（サイズ上限の既定値は実測後に決まるため、どちらでもよい）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else
+  st10="$(jq -r '.usage_status' "$SNAP")"
+  case "$st10|$SNAP_N" in
+    "ok|1"|"unknown|1") pass ;;
+    *) fail "usage_status|通数 = ${st10}|${SNAP_N}（ok か unknown が 1 通のはず）" ;;
+  esac
+fi
 
 report

@@ -110,6 +110,7 @@ export function flattenAgentTree(tree, depth = 0) {
     status: tree.status,
     statusLabel: statusLabel(tree.status),
     tools,
+    usage: formatUsage(tree.usage),
   }];
   if (Array.isArray(tree.children)) {
     for (const child of tree.children) rows.push(...flattenAgentTree(child, depth + 1));
@@ -195,6 +196,125 @@ export function formatLoopPanel(loop, nowMs) {
   };
 }
 
+// ---------- トークン数・推定コスト ----------
+
+const MICRO_USD_PER_USD = 1_000_000;
+const MICRO_USD_PER_DISPLAY_UNIT = 100; // 表示は小数 4 桁（1e-4 ドル単位）
+const DISPLAY_UNITS_PER_USD = MICRO_USD_PER_USD / MICRO_USD_PER_DISPLAY_UNIT;
+const USAGE_STATES = Object.freeze({
+  known: 'usage-known',
+  lower_bound: 'usage-lower-bound',
+  unknown: 'usage-unknown',
+  none: 'usage-none',
+});
+const USAGE_UNKNOWN_TEXT = '不明';
+const USAGE_TOKEN_KEYS = Object.freeze(['input', 'output', 'cache_creation', 'cache_read']);
+
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const ownRecord = (object, key) => (Object.hasOwn(object, key) && isRecord(object[key]) ? object[key] : null);
+const withCommas = (count) => String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+function usageResult(state, costText = '', tokensText = '') {
+  return { state, costText, tokensText, className: USAGE_STATES[state] };
+}
+const unknownUsage = () => usageResult('unknown', USAGE_UNKNOWN_TEXT);
+
+/** マイクロドル -> '$0.0123'（小数 4 桁・整数部 3 桁区切り）。0 は '$0' */
+function formatMicroUsd(microUsd) {
+  if (microUsd === 0) return '$0';
+  const units = Math.round(microUsd / MICRO_USD_PER_DISPLAY_UNIT);
+  const dollars = Math.floor(units / DISPLAY_UNITS_PER_USD);
+  const fraction = String(units % DISPLAY_UNITS_PER_USD).padStart(4, '0');
+  return `$${withCommas(dollars)}.${fraction}`;
+}
+
+function formatTokens(tokens, unknownSnapshots) {
+  const values = USAGE_TOKEN_KEYS.map((key) => (isRecord(tokens) ? ownCount(tokens, key) : null));
+  if (values.some((v) => v === null) || unknownSnapshots === null) return '';
+  const [input, output, cacheCreation, cacheRead] = values.map(withCommas);
+  const text = `入力 ${input} / 出力 ${output} / キャッシュ書込 ${cacheCreation} / キャッシュ読取 ${cacheRead}`;
+  return unknownSnapshots > 0 ? `${text}（不明なスナップショット ${unknownSnapshots} 件は含まない）` : text;
+}
+
+function costResult({ knownMicroUsd, knownCount, unknownCount }, tokensText) {
+  if (unknownCount === 0) return usageResult('known', `推定 ${formatMicroUsd(knownMicroUsd)}`, tokensText);
+  if (knownCount > 0) return usageResult('lower_bound', `推定 ${formatMicroUsd(knownMicroUsd)} 以上（不明を含む）`, tokensText);
+  return usageResult('unknown', USAGE_UNKNOWN_TEXT, tokensText);
+}
+
+/**
+ * セッションの usage_total を表示用に整える。判定できない入力は「不明」に倒す（例外を投げない）。
+ * @param {unknown} usageTotal
+ */
+export function formatUsageTotal(usageTotal) {
+  try {
+    if (!isRecord(usageTotal)) return unknownUsage();
+    const cost = ownRecord(usageTotal, 'cost');
+    if (cost === null) return unknownUsage();
+    const knownMicroUsd = ownCount(cost, 'known_micro_usd');
+    const knownCount = ownCount(cost, 'known_count');
+    const unknownCount = ownCount(cost, 'unknown_count');
+    if (knownMicroUsd === null || knownCount === null || unknownCount === null) return unknownUsage();
+    const tokensText = formatTokens(ownRecord(usageTotal, 'tokens'), ownCount(usageTotal, 'unknown_snapshots'));
+    return costResult({ knownMicroUsd, knownCount, unknownCount }, tokensText);
+  } catch {
+    return unknownUsage();
+  }
+}
+
+const MODEL_TOKEN_FIELDS = Object.freeze({
+  input: ['input_tokens'],
+  output: ['output_tokens'],
+  cache_creation: ['cache_creation_5m_input_tokens', 'cache_creation_1h_input_tokens'],
+  cache_read: ['cache_read_input_tokens'],
+});
+
+/** models の 1 要素を { tokens, cost } にする。形が壊れていれば null */
+function readModel(model) {
+  if (!isRecord(model)) return null;
+  const cost = ownRecord(model, 'cost');
+  const status = cost === null ? null : ownString(cost, 'status');
+  const microUsd = cost === null ? null : ownCount(cost, 'micro_usd');
+  if (status !== 'unknown' && !(status === 'known' && microUsd !== null)) return null;
+  const tokens = {};
+  for (const [key, fields] of Object.entries(MODEL_TOKEN_FIELDS)) {
+    const counts = fields.map((field) => ownCount(model, field));
+    if (counts.some((c) => c === null)) return null;
+    tokens[key] = counts.reduce((a, b) => a + b, 0);
+  }
+  return { tokens, microUsd: status === 'known' ? microUsd : null };
+}
+
+/**
+ * ノード（メイン・サブ）の usage を表示用に整える。不明なモデルを 0 円として足さない。
+ * @param {unknown} usage
+ */
+export function formatUsage(usage) {
+  try {
+    if (usage === null || usage === undefined) return usageResult('none');
+    if (!isRecord(usage)) return unknownUsage();
+    const status = ownString(usage, 'status');
+    if (status === 'unknown') return unknownUsage();
+    if (status !== 'ok' || !Object.hasOwn(usage, 'models') || !Array.isArray(usage.models)) return unknownUsage();
+    const models = usage.models.map(readModel);
+    if (models.some((m) => m === null)) return unknownUsage();
+    const tokens = { input: 0, output: 0, cache_creation: 0, cache_read: 0 };
+    const cost = { knownMicroUsd: 0, knownCount: 0, unknownCount: 0 };
+    for (const m of models) {
+      for (const key of USAGE_TOKEN_KEYS) tokens[key] += m.tokens[key];
+      if (m.microUsd === null) {
+        cost.unknownCount += 1;
+      } else {
+        cost.knownMicroUsd += m.microUsd;
+        cost.knownCount += 1;
+      }
+    }
+    return costResult(cost, formatTokens(tokens, 0));
+  } catch {
+    return unknownUsage();
+  }
+}
+
 // ---------- DOM（document がある時だけ） ----------
 
 function el(tag, text, className) {
@@ -236,16 +356,25 @@ function renderLoop(loop) {
   container.replaceChildren(...rows);
 }
 
+/** 金額とトークン数。className は formatUsage / formatUsageTotal が固定の許可リストから返したものだけ */
+function usageSpan(usage) {
+  const span = el('span', usage.costText, `usage ${usage.className}`);
+  if (usage.tokensText !== '') span.append(' ', el('span', usage.tokensText, 'usage-tokens'));
+  return span;
+}
+
 function renderTrees(sessions) {
   const container = document.getElementById('trees');
   container.replaceChildren(...sessions.map((session) => {
     const group = el('div', undefined, 'tree-group');
     group.append(el('h3', shortSessionId(session.session_id)));
+    group.append(usageSpan(formatUsageTotal(session.usage_total)));
     const list = el('ul', undefined, 'tree-list');
     for (const node of flattenAgentTree(session.tree)) {
       const li = el('li', undefined, `tree-node depth-${Math.min(node.depth, MAX_TREE_DEPTH_CLASS)}`);
       li.append(el('span', node.name, 'tree-name'), ' ', el('span', node.statusLabel, statusClass(node.status)));
       if (node.tools.length > 0) li.append(' ', el('span', node.tools.join(', '), 'tree-tools'));
+      if (node.usage.state !== 'none') li.append(' ', usageSpan(node.usage));
       list.append(li);
     }
     group.append(list);

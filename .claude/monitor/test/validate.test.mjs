@@ -37,20 +37,29 @@ async function expectNg(obj, label) {
 
 // ---------- 契約: 全 emitted fixture ----------
 
-test('全 emitted fixture を受理し、event は入力と等しい', async () => {
-  const fx = emittedFixtures();
+// 旧予約キー model / usage を持つ fixture（#23 で削除された形。受理されてはならない）
+const isLegacyUsageFixture = (f) => f.name.endsWith('.with-usage');
+
+test('全 emitted fixture（旧予約キーを持つものを除く）を受理し、event は入力と等しい', async () => {
+  const fx = emittedFixtures().filter((f) => !isLegacyUsageFixture(f));
   assert.ok(fx.length >= 20, `fixture が少なすぎる: ${fx.length}`);
+  assert.ok(fx.some((f) => f.name.startsWith('UsageSnapshot.')), 'UsageSnapshot の fixture が含まれるはず');
   for (const f of fx) {
     const r = await expectOk(f.obj, f.name);
     assert.deepEqual(r.event, f.obj, f.name);
   }
 });
 
+test('旧予約キー model / usage を持つ fixture（*.with-usage）は拒否する', async () => {
+  const legacy = emittedFixtures().filter(isLegacyUsageFixture);
+  for (const f of legacy) await expectNg(f.obj, f.name);
+});
+
 test('入力を書き換えない（deep freeze しても例外にならない）', async () => {
-  const f = emittedFixtures().find((x) => x.name === 'SubagentStop.with-usage').obj;
-  const frozen = structuredClone(f);
+  const frozen = structuredClone(emittedFixtures().find((x) => x.name === 'UsageSnapshot.main-ok').obj);
   Object.freeze(frozen);
-  Object.freeze(frozen.usage);
+  Object.freeze(frozen.models);
+  for (const m of frozen.models) Object.freeze(m);
   await expectOk(frozen);
 });
 
@@ -60,7 +69,7 @@ test('オブジェクト以外（null / 配列 / 文字列 / 数値 / 真偽値 
   for (const v of [null, [], [base('Stop')], 'Stop', 42, true, undefined]) await expectNg(v, String(v));
 });
 
-test('schema_version は整数 1 のみ', async () => {
+test('schema_version は（UsageSnapshot 以外の）10 イベントでは整数 1 のみ', async () => {
   for (const sv of [2, 0, '1', 1.5, null, true, [1]]) await expectNg({ ...base('Stop'), schema_version: sv }, `sv=${String(sv)}`);
   const { schema_version: _drop, ...noSv } = base('Stop');
   await expectNg(noSv, 'schema_version 欠落');
@@ -112,7 +121,7 @@ const OPTIONAL = {
   SessionStart: ['source'], SessionEnd: ['reason'], UserPromptSubmit: [], Notification: [], PreCompact: ['trigger'],
   PreToolUse: ['agent_id', 'agent_type', 'subagent_type', 'bash_command', 'file_path'],
   PostToolUse: ['agent_id', 'agent_type', 'bash_command', 'file_path', 'duration_ms'],
-  SubagentStart: [], SubagentStop: ['stop_hook_active', 'model', 'usage'], Stop: ['stop_hook_active', 'model', 'usage'],
+  SubagentStart: [], SubagentStop: ['stop_hook_active'], Stop: ['stop_hook_active'],
 };
 const ALL_KEYS = [
   'agent_id', 'agent_type', 'source', 'reason', 'trigger', 'tool_name', 'tool_use_id', 'subagent_type',
@@ -179,7 +188,6 @@ const IDENT = [
   ['tool_name', 'a', [' ', '.', '/', ':'], (v) => pre({ tool_name: v })],
   ['tool_use_id', 'a', ['-', ' ', '.', '/'], (v) => pre({ tool_use_id: v })],
   ['subagent_type', 'a', [' ', '.', '/'], (v) => pre({ tool_name: 'Agent', subagent_type: v })],
-  ['model', 'a', [' ', '/', ':', '日'], (v) => base('Stop', { model: v })],
 ];
 
 for (const [key, ch, badChars, build] of IDENT) {
@@ -210,7 +218,6 @@ test('識別子ごとの許可文字の差（session_id はハイフン可・age
   await expectOk(pre({ tool_use_id: 'toolu_a_b' }));
   await expectNg(base('Stop', { session_id: 'a_b' }));
   await expectOk(pre({ tool_name: 'mcp-x_y' }));
-  await expectOk(base('Stop', { model: 'claude-haiku-4-5.1_x' }));
 });
 
 // ---------- 列挙値 ----------
@@ -285,18 +292,14 @@ test('stop_hook_active は真偽値のみ', async () => {
   for (const v of ['true', 0, 1, null, []]) await expectNg(base('Stop', { stop_hook_active: v }), String(v));
 });
 
-test('usage: 既知の 5 キーのみ・非負整数・上限 10,000,000', async () => {
-  const keys = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'thinking_tokens'];
-  for (const k of keys) {
-    await expectOk(base('Stop', { usage: { [k]: 0 } }), `${k}=0`);
-    await expectOk(base('Stop', { usage: { [k]: 10_000_000 } }), `${k}=1e7`);
-    await expectNg(base('Stop', { usage: { [k]: 10_000_001 } }), `${k}=1e7+1`);
-    await expectNg(base('Stop', { usage: { [k]: -1 } }), `${k}=-1`);
-    await expectNg(base('Stop', { usage: { [k]: 1.5 } }), `${k}=1.5`);
-    await expectNg(base('Stop', { usage: { [k]: '1' } }), `${k}="1"`);
+test('旧予約キー model / usage は Stop / SubagentStop でも拒否する（#23 で削除）', async () => {
+  for (const event of ['Stop', 'SubagentStop']) {
+    const mk = (extra) => (event === 'Stop' ? base('Stop', extra) : sub('SubagentStop', extra));
+    await expectOk(mk({}), `${event} 素の形`);
+    await expectNg(mk({ model: 'claude-x-1' }), `${event} + model`);
+    await expectNg(mk({ usage: { input_tokens: 1 } }), `${event} + usage`);
+    await expectNg(mk({ usage: {} }), `${event} + usage 空`);
   }
-  await expectNg(base('Stop', { usage: { input_tokens: 1, evil: 1 } }), '未知キー');
-  for (const u of [null, [], 'x', 1]) await expectNg(base('Stop', { usage: u }), JSON.stringify(u));
 });
 
 // ---------- 拒否理由に入力値を載せない（lessons #11: 行き先の1つ） ----------
