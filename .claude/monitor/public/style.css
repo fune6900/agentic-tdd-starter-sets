@@ -246,3 +246,8 @@ td.status-running, td.status-waiting, td.status-unknown { font-weight: 600; }
   font-size: 0.85rem;
 }
 .loop-note { color: var(--muted); font-size: 0.8rem; margin: 0.4rem 0 0; overflow-wrap: anywhere; }
+
+.usage { font-size: 0.85em; }
+.usage-tokens { color: #666; }
+.usage-lower-bound { font-style: italic; }
+.usage-unknown { color: #666; }

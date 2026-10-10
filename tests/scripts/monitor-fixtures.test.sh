@@ -528,4 +528,148 @@ jq --arg s "prefix-${secret_word}-suffix" '.file_path = $s' "$SECRET_EMITTED" > 
 hit="$(secret_words_in_emitted "$SECRET_STDIN" "$SECRET_DIR/mutated2.json")"
 if [ -n "$(echo "$hit" | tr -s ' ')" ]; then pass; else fail "部分一致の秘密値を検出できなかった"; fi
 
+# ══════════════════════════════════════════════
+suite "monitor-fixtures: UsageSnapshot の emitted と transcript fixture（Issue #23）"
+# ══════════════════════════════════════════════
+# 仕様の正: event-schema.md「UsageSnapshot」。emitted の期待値は transcript から
+# 独立の jq（参照実装）で再計算して突き合わせる。手書きの期待値だけに頼ると、
+# fixture と仕様がずれても気付けない。
+
+TRANSCRIPT_DIR="$MONITOR_DIR/test/fixtures/transcript"
+SNAP_MAIN="$EMITTED_DIR/UsageSnapshot.main-ok.json"
+SNAP_SUB="$EMITTED_DIR/UsageSnapshot.sub-ok.json"
+SNAP_UNK="$EMITTED_DIR/UsageSnapshot.unknown.json"
+
+# 仕様の集計規則 1〜9 を素直に書いた参照実装（transcript の jsonl を stdin から読む）
+ref_aggregate() {
+  jq -R -s -c '
+    def isint: type == "number" and . == floor and . >= 0;
+    def n(k): (.[k] // 0);
+    [ split("\n")[] | select(test("^\\s*$") | not) | fromjson
+      | select(.type == "assistant")
+      | select((.message | type) == "object" and (.message.usage | type) == "object")
+      | select((.message.id | type) == "string" and .message.id != "") ]
+    | group_by(.message.id) | map(.[-1].message)
+    | map(select((.usage | n("input_tokens")) + (.usage | n("output_tokens"))
+                 + (.usage | n("cache_creation_input_tokens")) + (.usage | n("cache_read_input_tokens")) > 0))
+    | group_by(.model) | map(
+        . as $ms
+        | { model: $ms[0].model, message_count: ($ms | length),
+            input_tokens: ([$ms[].usage | n("input_tokens")] | add),
+            output_tokens: ([$ms[].usage | n("output_tokens")] | add),
+            cache_creation_5m_input_tokens: ([$ms[].usage | (.cache_creation.ephemeral_5m_input_tokens // n("cache_creation_input_tokens"))] | add),
+            cache_creation_1h_input_tokens: ([$ms[].usage | (.cache_creation.ephemeral_1h_input_tokens // 0)] | add),
+            cache_read_input_tokens: ([$ms[].usage | n("cache_read_input_tokens")] | add),
+            fast_mode: ([$ms[].usage.speed == "fast"] | any),
+            us_inference: ([$ms[].usage.inference_geo == "us"] | any),
+            variant_unknown: false,
+            cache_split_unknown: false })
+    | sort_by(.model)'
+}
+
+it "transcript/main.jsonl と sub.jsonl が存在する"
+if [ -f "$TRANSCRIPT_DIR/main.jsonl" ] && [ -f "$TRANSCRIPT_DIR/sub.jsonl" ]; then pass; else fail "無い: $TRANSCRIPT_DIR"; fi
+
+for t in main sub; do
+  tf="$TRANSCRIPT_DIR/${t}.jsonl"
+  it "transcript/${t}.jsonl に個人情報が残っていない（ファイル全文判定）"
+  assert_eq "$(check_no_leak_text "$tf" | tr -s ' ')" ""
+
+  it "transcript/${t}.jsonl は空行以外の全行が JSON として読める"
+  bad=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *[![:space:]]*) printf '%s' "$line" | jq -e . >/dev/null 2>&1 || bad=$((bad + 1)) ;;
+    esac
+  done <"$tf"
+  assert_eq "$bad" "0"
+
+  it "transcript/${t}.jsonl は番兵（SNT）を含む（漏洩検査が空振りしないための前提）"
+  assert_file_contains "$tf" "SNT"
+done
+
+it "transcript/main.jsonl は重複 id・全 0 の行・usage 無し・空白のみの行・assistant 以外の行を含む（集計規則の網羅）"
+mt="$TRANSCRIPT_DIR/main.jsonl"
+dup="$(jq -R -s -r '[split("\n")[] | select(test("^\\s*$")|not) | fromjson | select(.type=="assistant") | .message.id] | group_by(.) | map(select(length>1)) | length' "$mt")"
+blank="$(grep -c '^[[:space:]]\+$' "$mt")"
+zero="$(grep -c '"<synthetic>"' "$mt")"
+other="$(grep -c '"type":"cost-state"' "$mt")"
+nousage="$(grep -c 'SNTNOUSAGE' "$mt")"
+if [ -n "$dup" ] && [ "$dup" -ge 1 ] && [ "$blank" -ge 1 ] && [ "$zero" -ge 1 ] && [ "$other" -ge 1 ] && [ "$nousage" -ge 1 ]; then pass
+else fail "dup=${dup} blank=${blank} synthetic=${zero} cost-state=${other} nousage=${nousage}"; fi
+
+it "transcript/main.jsonl は同じ id で usage が違う行（最後を採る規則）を含む"
+diffid="$(jq -R -s -r '[split("\n")[] | select(test("^\\s*$")|not) | fromjson | select(.type=="assistant" and .message.usage != null) | {id:.message.id, u:.message.usage}] | group_by(.id) | map(select((map(.u)|unique|length)>1)) | length' "$mt")"
+if [ -n "$diffid" ] && [ "$diffid" -ge 1 ]; then pass; else fail "usage が食い違う同一 id が無い"; fi
+
+for pair in "main:$SNAP_MAIN" "sub:$SNAP_SUB"; do
+  t="${pair%%:*}"; sf="${pair#*:}"
+  it "emitted/$(basename "$sf") は transcript/${t}.jsonl を参照実装で集計した結果と一致する"
+  assert_eq "$(jq -S -c '.models' "$sf" 2>/dev/null)" "$(ref_aggregate <"$TRANSCRIPT_DIR/${t}.jsonl" | jq -S -c .)"
+done
+
+it "自己診断: models の数値を 1 変えた emitted は参照実装との突き合わせで FAIL する"
+new_tmp_dir SNAP_SELF
+jq '.models[0].output_tokens += 1' "$SNAP_MAIN" >"$SNAP_SELF/m.json"
+if [ "$(jq -S -c '.models' "$SNAP_SELF/m.json")" = "$(ref_aggregate <"$TRANSCRIPT_DIR/main.jsonl" | jq -S -c .)" ]; then
+  fail "変異を検出できなかった"
+else pass; fi
+
+# 形の検査（受信側の検証と同じ規則を別実装で）
+snap_shape_problems() { # <path> → 問題の説明（空なら適合）
+  jq -r '
+    def isint: type == "number" and . == floor and . >= 0;
+    def mkeys: ["model","message_count","input_tokens","output_tokens","cache_creation_5m_input_tokens","cache_creation_1h_input_tokens","cache_read_input_tokens","fast_mode","us_inference","variant_unknown","cache_split_unknown"];
+    def reasons: ["no_path","symlink","not_regular_file","too_large","read_failed","parse_failed","invalid_usage","too_many_models","out_of_range"];
+    [
+      (if .schema_version != 2 then "schema_version" else empty end),
+      (if .event != "UsageSnapshot" then "event" else empty end),
+      (if (.session_id | type) != "string" then "session_id" else empty end),
+      (if (.usage_status | IN("ok","unknown") | not) then "usage_status" else empty end),
+      (if .usage_status == "ok" then
+         ( (if has("unknown_reason") then "ok_with_reason" else empty end),
+           (if (.models | type) != "array" then "models_missing"
+            else
+              ( (if (.models | length) > 8 then "too_many" else empty end),
+                (if ([.models[].model] | . != (sort | unique)) then "models_not_sorted_unique" else empty end),
+                (.models[] | (if (keys | sort) != (mkeys | sort) then "element_keys" else empty end),
+                             (if (.model | type) != "string" or (.model | test("^[A-Za-z0-9._-]{1,64}$") | not) then "model_id" else empty end),
+                             (if ([.message_count, .input_tokens, .output_tokens, .cache_creation_5m_input_tokens, .cache_creation_1h_input_tokens, .cache_read_input_tokens] | all(isint) | not) then "int" else empty end),
+                             (if ([.fast_mode, .us_inference, .variant_unknown, .cache_split_unknown] | all(type == "boolean") | not) then "bool" else empty end)) )
+            end) )
+       else
+         ( (if has("models") then "unknown_with_models" else empty end),
+           (if (.unknown_reason | IN(reasons[]) | not) then "unknown_reason" else empty end) )
+       end)
+    ] | join(",")' "$1" 2>/dev/null
+}
+
+for sf in "$SNAP_MAIN" "$SNAP_SUB" "$SNAP_UNK"; do
+  it "emitted/$(basename "$sf") は仕様どおりの形（schema_version 2・ok/unknown の排他・models の要素）"
+  assert_eq "$(snap_shape_problems "$sf")" ""
+
+  it "emitted/$(basename "$sf") に番兵（SNT）が現れない"
+  assert_file_not_contains "$sf" "SNT"
+
+  it "emitted/$(basename "$sf") に '/' が現れない（パス混入なし）"
+  case "$(cat "$sf")" in */*) fail "'/' がある" ;; *) pass ;; esac
+done
+
+it "自己診断: ok なのに unknown_reason を持つ emitted は形の検査で FAIL する"
+jq '.unknown_reason = "too_large"' "$SNAP_MAIN" >"$SNAP_SELF/bad1.json"
+if [ -n "$(snap_shape_problems "$SNAP_SELF/bad1.json")" ]; then pass; else fail "検出できなかった"; fi
+
+it "自己診断: unknown なのに models を持つ emitted は形の検査で FAIL する"
+jq '.models = []' "$SNAP_UNK" >"$SNAP_SELF/bad2.json"
+if [ -n "$(snap_shape_problems "$SNAP_SELF/bad2.json")" ]; then pass; else fail "検出できなかった"; fi
+
+it "UsageSnapshot.main-ok は agent_id を持たず、sub-ok は agent_id を持つ（帰属）"
+assert_eq "$(jq -r 'has("agent_id")' "$SNAP_MAIN"),$(jq -r '.agent_id // ""' "$SNAP_SUB")" "false,aaaaaaaaaaaaaaaaa"
+
+it "UsageSnapshot の session_id は hook-stdin/Stop.json と一致する（フックが stdin の値を使う前提）"
+assert_eq "$(jq -r '.session_id' "$SNAP_MAIN")" "$(jq -r '.session_id' "$HOOK_STDIN_DIR/Stop.json")"
+
+it "旧形式の emitted/Stop.with-usage.json と SubagentStop.with-usage.json が残っていない（UsageSnapshot に置換済み）"
+if [ -e "$EMITTED_DIR/Stop.with-usage.json" ] || [ -e "$EMITTED_DIR/SubagentStop.with-usage.json" ]; then fail "旧 fixture が残っている"; else pass; fi
+
 report

@@ -18,15 +18,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load } from './helpers.mjs';
+import { load, rec, SESS, T0 } from './helpers.mjs';
 
 const derive = async (records) => (await load('derive.mjs')).deriveState(records);
 
-const T0 = 1_800_000_000_000;
-const SESS = 'sessA';
-const rec = (seq, event, extra = {}, session = SESS) => ({
-  seq, received_at: T0 + seq * 1000, schema_version: 1, event, session_id: session, ...extra,
-});
 const pre = (seq, id, extra = {}, session) => rec(seq, 'PreToolUse', { tool_name: 'Read', tool_use_id: id, ...extra }, session);
 const post = (seq, id, extra = {}, session) => rec(seq, 'PostToolUse', { tool_name: 'Read', tool_use_id: id, ...extra }, session);
 const subStart = (seq, id, type = 'general-purpose') => rec(seq, 'SubagentStart', { agent_id: id, agent_type: type });

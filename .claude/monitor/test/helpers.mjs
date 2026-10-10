@@ -19,6 +19,22 @@ export const EMITTED_DIR = join(TEST_DIR, 'fixtures', 'emitted');
 
 export const SID = '11111111-1111-4111-8111-111111111111';
 
+// ---------- 導出テスト共通のレコード ----------
+
+export const T0 = 1_800_000_000_000;
+export const SESS = 'sessA';
+/** deriveState に渡す保存済みレコード。received_at は seq から決める（時計を読まない） */
+export const rec = (seq, event, extra = {}, session = SESS, sv = 1) => ({
+  seq, received_at: T0 + seq * 1000, schema_version: sv, event, session_id: session, ...extra,
+});
+
+/** UsageSnapshot の models 要素（同じキー集合。数値が既定値に依存するテストは extra で明示する） */
+export const usageEntry = (extra = {}) => ({
+  model: 'claude-haiku-4-5-20251001', message_count: 3, input_tokens: 10, output_tokens: 20,
+  cache_creation_5m_input_tokens: 30, cache_creation_1h_input_tokens: 40, cache_read_input_tokens: 50,
+  fast_mode: false, us_inference: false, variant_unknown: false, cache_split_unknown: false, ...extra,
+});
+
 // 指定子は全てリテラルにする（static.test.mjs の依存ゼロ検査が非リテラルの動的 import を禁じるため）
 const LOADERS = {
   'validate.mjs': () => import('../server/validate.mjs'),
