@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareDbPath } from './db-guard.mjs';
 import { deriveState } from './derive.mjs';
+import { readLoopState } from './loop-state.mjs';
 import { openStore } from './store.mjs';
 import { validateEvent } from './validate.mjs';
 
@@ -21,6 +22,9 @@ export const PRUNE_EVERY_APPENDS = 1000;
 // 既定のデータディレクトリ。gitignore 済みの .claude/monitor/data/（リポジトリにも、ホーム配下にも置かない）
 const DEFAULT_DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const DB_FILE_NAME = 'monitor.db';
+// ループ状態。.claude/memory/loop-state.json（コンテナでは MONITOR_LOOP_STATE で /memory 配下を指す）を一定間隔で読む
+export const DEFAULT_LOOP_STATE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'memory', 'loop-state.json');
+export const DEFAULT_LOOP_POLL_MS = 2000;
 // ビューの静的ファイル。固定の3つだけを起動時に読む（URL からパスを組み立てない。読めなければ起動失敗 = fail closed）
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const STATIC_FILES = Object.freeze({
@@ -134,10 +138,11 @@ function rejectTooLarge(req, res) {
 }
 
 /**
- * @param {{port?: number, bind?: string, dbPath?: string, dataDir?: string, now?: () => number, retentionMs?: number, maxRows?: number, derive?: typeof deriveState}} opts
+ * @param {{port?: number, bind?: string, dbPath?: string, dataDir?: string, now?: () => number, retentionMs?: number, maxRows?: number, derive?: typeof deriveState, loopStatePath?: string, loopPollMs?: number}} opts
  */
 export async function createServer({
   port = DEFAULT_PORT, bind = resolveBind(process.env), dbPath, dataDir = DEFAULT_DATA_DIR, now, retentionMs, maxRows, derive = deriveState,
+  loopStatePath = DEFAULT_LOOP_STATE_PATH, loopPollMs = DEFAULT_LOOP_POLL_MS,
 } = {}) {
   // 静的ファイルを先に読む（読めなければ DB を開く前に落ちる）
   const staticRoutes = Object.fromEntries(Object.entries(STATIC_FILES).map(([path, [file, type]]) => {
@@ -161,6 +166,21 @@ export async function createServer({
   pruneSafe();
   const timer = setInterval(pruneSafe, PRUNE_INTERVAL_MS);
   timer.unref();
+
+  // ループ状態は起動時に 1 回、以後ポーリング（fs.watch は使わない: 正しさをイベント通知の到達性に依存させない）
+  const readLoop = () => {
+    const value = readLoopState(loopStatePath);
+    return { value, serialized: JSON.stringify(value) };
+  };
+  let loop = readLoop();
+  const pollLoopState = () => {
+    const next = readLoop();
+    if (next.serialized === loop.serialized) return;
+    loop = next;
+    // 値は載せない。受け取ったビューが /api/state を取り直す
+    for (const client of clients) client.write('event: loop\ndata: {}\n\n');
+  };
+  const loopTimer = setInterval(pollLoopState, loopPollMs);
 
   const broadcast = (record) => {
     const frame = `id: ${record.seq}\ndata: ${JSON.stringify(record)}\n\n`;
@@ -197,7 +217,7 @@ export async function createServer({
     if (stateCache?.last_seq !== lastSeq) {
       stateCache = { last_seq: lastSeq, body: { sessions: derive(store.list()).sessions, last_seq: lastSeq } };
     }
-    sendJson(res, 200, stateCache.body);
+    sendJson(res, 200, { ...stateCache.body, loop: loop.value });
   }
 
   /**
@@ -264,6 +284,7 @@ export async function createServer({
     store,
     async close() {
       clearInterval(timer);
+      clearInterval(loopTimer);
       for (const client of clients) client.end();
       clients.clear();
       server.closeAllConnections();
@@ -296,6 +317,7 @@ if (isMain()) {
       port: resolveCliPort(process.env),
       bind: resolveBind(process.env),
       dbPath: process.env.MONITOR_DB || undefined,
+      loopStatePath: process.env.MONITOR_LOOP_STATE || undefined,
     });
     // CLI の起動通知。受信値は載せない
     process.stdout.write(`listening on ${handle.bind}:${handle.port}\n`);

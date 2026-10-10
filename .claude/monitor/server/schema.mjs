@@ -9,6 +9,8 @@
 //   - 長さは maxBytes（UTF-8 のバイト長。文字数ではない）で別途判定する。パターン側に長さは入れない。
 //   - 判定順の推奨: 型 → バイト長 → パターン。
 
+import { CONTROL_CHARS_CLASS_BODY } from './control-chars.mjs';
+
 /**
  * @typedef {{ kind: 'string', maxBytes: number, pattern: string, flags?: 'u' }} StringSpec
  * @typedef {{ kind: 'enum', values: readonly string[] }} EnumSpec
@@ -65,10 +67,10 @@ export const FIELDS = Object.freeze({
   // `?`（固定の置換値）または先頭トークンのベース名 1〜32 バイト。`/` は出力に現れないので許可しない。
   bash_command: ident(32, '^(?:\\?|[A-Za-z0-9._-]+)$'),
   // ベース名のみ。送信側で除去済みのはずの文字（`/`・C0・DEL・C1・双方向制御）が残っていたら拒否する。
-  // 除外: U+0000-001F, U+007F-009F, U+200E, U+200F, U+202A-202E, U+2066-2069, `/`。空は不可。最大 128 バイト。
+  // 除外: 制御文字・双方向制御文字（control-chars.mjs）, `/`。空は不可。最大 128 バイト。
   file_path: Object.freeze({
     kind: 'string', maxBytes: 128, flags: 'u',
-    pattern: '^[^\\u0000-\\u001F\\u007F-\\u009F\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069/]+$',
+    pattern: `^[^${CONTROL_CHARS_CLASS_BODY}/]+$`,
   }),
   source: Object.freeze({ kind: 'enum', values: Object.freeze(['startup', 'resume', 'clear', 'compact', 'fork']) }),
   // 送信側は other / unknown の2種しか送らない。

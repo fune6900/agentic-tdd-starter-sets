@@ -713,6 +713,32 @@ suite "monitor-image: Dockerfile の ENV（docker run が DB 指定なしでも�
 it "ENV MONITOR_DB が /data 配下の絶対パスで、/data を node に chown している（docker run が DB 指定なしでも起動できる）"
 if [ -n "$DF" ] && df_db_env_ok "$DF"; then pass; else fail "ENV MONITOR_DB: '$(df_env_value "$DF" MONITOR_DB)'"; fi
 
+# Issue #22: 状態ファイルは /memory（compose が .claude/memory を :ro で bind するディレクトリ）の loop-state.json。
+# 完全一致で見る（/data 配下・別名・末尾ゴミ・.. を通さない）
+df_loop_state_env_ok() { # <内容>
+  local v
+  v="$(df_env_value "$1" MONITOR_LOOP_STATE)" || return 1
+  [ "$v" = "/memory/loop-state.json" ]
+}
+
+it "[自己診断] df_loop_state_env_ok: 良い入力は通り、悪い入力は落ちる"
+selfdiag_loop_env() {
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE=/memory/loop-state.json" || { echo "KEY=VAL 形式が通らない"; return 1; }
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE /memory/loop-state.json" || { echo "KEY VAL 形式が通らない"; return 1; }
+  df_loop_state_env_ok "ENV A=1 MONITOR_LOOP_STATE=/memory/loop-state.json" || { echo "複数代入が通らない"; return 1; }
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE=/data/loop-state.json" && { echo "/data 配下が通った"; return 1; }
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE=/memory/loop-state.json.bak" && { echo "別名が通った"; return 1; }
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE=/memory/../etc/passwd" && { echo "/.. が通った"; return 1; }
+  df_loop_state_env_ok "ENV MONITOR_LOOP_STATE=memory/loop-state.json" && { echo "相対パスが通った"; return 1; }
+  df_loop_state_env_ok "ENV OTHER=/memory/loop-state.json" && { echo "別キーが通った"; return 1; }
+  df_loop_state_env_ok "FROM node" && { echo "ENV 無しが通った"; return 1; }
+  return 0
+}
+assert_ok selfdiag_loop_env
+
+it "ENV MONITOR_LOOP_STATE=/memory/loop-state.json がある（Issue #22: ビューのループ状態パネルが読む先）"
+if [ -n "$DF" ] && df_loop_state_env_ok "$DF"; then pass; else fail "ENV MONITOR_LOOP_STATE: '$(df_env_value "$DF" MONITOR_LOOP_STATE)'"; fi
+
 it "ENV MONITOR_BIND が無い（イメージ既定は 127.0.0.1 listen のまま。公開範囲を広げない）"
 if [ -n "$DF" ] && df_no_bind_env "$DF"; then pass; else fail "ENV MONITOR_BIND がある: '$(df_env_value "$DF" MONITOR_BIND)'"; fi
 

@@ -25,6 +25,7 @@ const LOADERS = {
   'derive.mjs': () => import('../server/derive.mjs'),
   'store.mjs': () => import('../server/store.mjs'),
   'server.mjs': () => import('../server/server.mjs'),
+  'loop-state.mjs': () => import('../server/loop-state.mjs'),
 };
 export const load = (name) => {
   const loader = LOADERS[name];
@@ -64,11 +65,15 @@ export function cleanupTmp() {
 
 // ---------- サーバ起動 ----------
 
+/** 存在しないループ状態ファイルのパス（loop: {status:'unknown', reason:'missing'} になる） */
+export const missingLoopStatePath = (dir = makeTmpDir()) => join(dir, 'no-such-loop-state.json');
+
 export async function startServer(opts = {}) {
   const { createServer } = await load('server.mjs');
   const dir = makeTmpDir();
   const dbPath = opts.dbPath ?? join(dir, 'monitor.db');
-  const h = await createServer({ port: 0, bind: '127.0.0.1', dbPath, ...opts });
+  // 既定の loopStatePath は開発者の本物の loop-state.json なので、存在しない一時パスに差し替えて決定的にする
+  const h = await createServer({ port: 0, bind: '127.0.0.1', dbPath, loopStatePath: missingLoopStatePath(dir), ...opts });
   return { h, port: h.port, dir, dbPath, store: h.store, close: () => h.close() };
 }
 
@@ -92,7 +97,7 @@ export async function createWithDataDir(dataDir, opts = {}) {
     rmSync(realDefault, { recursive: true, force: true });
     return created;
   };
-  const handle = await createServer({ port: 0, bind: '127.0.0.1', dataDir, ...opts }).catch((err) => {
+  const handle = await createServer({ port: 0, bind: '127.0.0.1', dataDir, loopStatePath: missingLoopStatePath(), ...opts }).catch((err) => {
     cleanupDefault();
     throw err;
   });
@@ -286,7 +291,7 @@ export const acaoHeaders = (headers) => Object.keys(headers).filter((k) => k.toL
 export function spawnCli(env) {
   const dir = makeTmpDir();
   const child = spawn(process.execPath, [join(SERVER_DIR, 'server.mjs')], {
-    env: { PATH: process.env.PATH, NODE_NO_WARNINGS: '1', MONITOR_DB: join(dir, 'monitor.db'), LOOP_MONITOR_PORT: '0', ...env },
+    env: { PATH: process.env.PATH, NODE_NO_WARNINGS: '1', MONITOR_DB: join(dir, 'monitor.db'), LOOP_MONITOR_PORT: '0', MONITOR_LOOP_STATE: missingLoopStatePath(dir), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const out = { stdout: '', stderr: '' };
