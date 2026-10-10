@@ -36,3 +36,11 @@ status: active
 - **なぜそう判断したか**: `kern.bootsessionuuid` は起動ごとの UUID で同じ起動中は不変（実測）。boottime の sec 部分だけにする案は、時刻補正が秒をまたげばやはり変わるので捨てた。再 G2 で init から 5 分 16 秒後も awake のままを実機確認
 - **G3 の判断**: 実際のスリープは挟まず、起動からの実測（壁時計 1197332 秒 / CLOCK_UPTIME_RAW 436749 秒＝スリープ約 8.8 日分を除外）で代替して意図充足。Linux は Docker の perl:5-slim で awake を確認（CI 上ではなく、CI は loop-state テストの実機 perl 検査で代える）。差し替えを環境変数でなく PATH の偽コマンドにしたのは意図の範囲内
 - **次**: Refactor（G4 中2: グローバル返却の明記と ELAPSED_LABEL 化／偽 sysctl のヒアドキュメント化）→ G1 再実行
+
+## 2026-10-10T05:09Z / #32 / done — PR #34 作成・全ゲート PASS
+
+- **やったこと**: PR #34 を作成。G1〜G4 PASS（G5 は起動条件外）、retry 1（G2: macOS の起動 ID）。Refactor（compute_elapsed が ELAPSED_LABEL も返す・偽 sysctl をヒアドキュメント化）後に G1 を再実行して PASS
+- **なぜ**: 起動 ID を `kern.bootsessionuuid` にしたのが最終的に効いた。`kern.boottime` は時刻補正で usec が変わり、数分で壁時計に倒れていた
+- **実機の記録**: macOS は起動からの壁時計 1197332 秒に対し CLOCK_UPTIME_RAW 436749 秒（スリープ約 8.8 日分を除外）。init から 5 分 16 秒後も awake。Linux は Docker の perl:5-slim で awake。Debian slim の perl-base は Time::HiRes が無く壁時計に倒れる。実際のスリープを挟む確認はしていない
+- **残課題**: 実際にスリープを挟む確認（`pmset sleepnow` を使う手動確認）／CI の ubuntu で awake になるかは CI の実機 perl 検査の結果で確かめる
+- **次**: エピック ai-monitor の #22（ループ状態パネル）。この PR がマージされるまで、ループの経過時間は従来どおり壁時計
