@@ -16,6 +16,13 @@
   --waiting-bg: #fff1d6;
   --unknown-bg: #fde8e6;
   --new-row: #e8f1fb;
+  --loop-ok-fg: #0a6b2d;
+  --loop-ok-bg: #e3f6e9;
+  --loop-halt-fg: #b42318;
+  --loop-halt-bg: #fde8e6;
+  --loop-halt-border: #b42318;
+  --loop-done-fg: #3e4c59;
+  --loop-unk-fg: #52606d;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -36,6 +43,13 @@
     --waiting-bg: #3a2c10;
     --unknown-bg: #3d1a17;
     --new-row: #1d3249;
+    --loop-ok-fg: #6fdc92;
+    --loop-ok-bg: #14301f;
+    --loop-halt-fg: #ffb4ab;
+    --loop-halt-bg: #5a1812;
+    --loop-halt-border: #ff6b5e;
+    --loop-done-fg: #b6c1cc;
+    --loop-unk-fg: #a3afbc;
   }
 }
 
@@ -168,3 +182,67 @@ td.status-running, td.status-waiting, td.status-unknown { font-weight: 600; }
 @media (prefers-reduced-motion: no-preference) {
   #connection-status { transition: color 0.2s; }
 }
+
+/* ---------- ループ状態パネル ----------
+   状態は 色 + 背景/枠 + 先頭記号 + 文言（textContent）の 4 重で伝える。色だけに頼らない。 */
+#loop-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+  max-width: 100%;
+}
+#loop-panel p { margin: 0.25rem 0; font-size: 0.9rem; overflow-wrap: anywhere; white-space: pre-wrap; }
+#loop-panel p:first-child { margin-top: 0; }
+#loop-panel p:last-child { margin-bottom: 0; }
+
+.loop-state {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.15rem 0.7rem;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.loop-running { color: var(--loop-ok-fg); background: var(--loop-ok-bg); border-color: var(--loop-ok-fg); }
+.loop-running::before { content: "\25B6\00a0"; }
+
+.loop-halted {
+  color: var(--loop-halt-fg);
+  background: var(--loop-halt-bg);
+  border-color: var(--loop-halt-border);
+  font-weight: 800;
+}
+.loop-halted::before { content: "\2716\00a0"; }
+
+.loop-completed { color: var(--loop-done-fg); background: var(--surface-alt); border-color: var(--border); }
+.loop-completed::before { content: "\2713\00a0"; }
+
+/* 灰色 + 破線 + 斜線地 + 斜体: 稼働中の緑実線とも停止の赤塗りとも別の「判定不能」の見た目 */
+.loop-unknown {
+  color: var(--loop-unk-fg);
+  background: repeating-linear-gradient(135deg, var(--surface-alt) 0, var(--surface-alt) 6px, var(--surface) 6px, var(--surface) 12px);
+  border-style: dashed;
+  border-color: var(--muted);
+  font-style: italic;
+}
+.loop-unknown::before { content: "?\00a0"; }
+
+/* ハードストップ時はパネル全体を赤の枠・淡い背景にして、離れて見ても分かるようにする */
+#loop-panel:has(.loop-state.loop-halted) {
+  border: 2px solid var(--loop-halt-border);
+  background: var(--loop-halt-bg);
+}
+#loop-panel:has(.loop-state.loop-unknown) { border-style: dashed; }
+
+.loop-halt-reason {
+  padding: 0.35rem 0.6rem;
+  border-left: 4px solid var(--loop-halt-border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+.loop-note { color: var(--muted); font-size: 0.8rem; margin: 0.4rem 0 0; overflow-wrap: anywhere; }

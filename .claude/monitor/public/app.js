@@ -117,6 +117,84 @@ export function flattenAgentTree(tree, depth = 0) {
   return rows;
 }
 
+// ---------- ループ状態パネル ----------
+
+const LOOP_GATES = Object.freeze(['G1', 'G2', 'G3', 'G4', 'G5']);
+const GATE_LABELS = Object.freeze({ pass: '✅', fail: '❌' });
+const GATE_NOT_RUN = '未実行';
+// className は status から組み立てず、固定の許可リストからだけ選ぶ
+const LOOP_STATES = Object.freeze({
+  running: { label: '稼働中', className: 'loop-running' },
+  halted: { label: 'ハードストップ', className: 'loop-halted' },
+  completed: { label: '完了', className: 'loop-completed' },
+});
+const LOOP_UNKNOWN_CLASS = 'loop-unknown';
+const LOOP_UNKNOWN_REASONS = Object.freeze({
+  missing: '状態ファイルなし',
+  symlink: 'リンク',
+  not_file: '通常ファイルでない',
+  too_large: 'サイズ超過',
+  empty: '空',
+  invalid_json: 'JSON不正',
+  invalid_shape: '形式不正',
+  read_error: '読み取り失敗',
+});
+const MS_PER_MINUTE = 60_000;
+
+const ownObject = (object, key) => (Object.hasOwn(object, key) && object[key] !== null && typeof object[key] === 'object' ? object[key] : null);
+const ownString = (object, key) => (Object.hasOwn(object, key) && typeof object[key] === 'string' ? object[key] : null);
+const ownCount = (object, key) => (Object.hasOwn(object, key) && Number.isSafeInteger(object[key]) && object[key] >= 0 ? object[key] : null);
+
+function unknownLoopPanel(reason) {
+  const detail = typeof reason === 'string' && Object.hasOwn(LOOP_UNKNOWN_REASONS, reason) ? LOOP_UNKNOWN_REASONS[reason] : null;
+  return {
+    state: 'unknown',
+    stateLabel: detail === null ? UNKNOWN_STATUS_LABEL : `${UNKNOWN_STATUS_LABEL}（${detail}）`,
+    className: LOOP_UNKNOWN_CLASS,
+    issue: '',
+    retryText: '',
+    gates: [],
+    elapsedText: '',
+    haltReason: '',
+  };
+}
+
+/**
+ * /api/state の loop を表示用に整える。判定できない入力は全て unknown に倒す（例外を投げない・入力を書き換えない）。
+ * @param {unknown} loop @param {unknown} nowMs
+ */
+export function formatLoopPanel(loop, nowMs) {
+  if (loop === null || typeof loop !== 'object' || Array.isArray(loop)) return unknownLoopPanel(undefined);
+  const status = ownString(loop, 'status');
+  if (status === 'unknown') return unknownLoopPanel(ownString(loop, 'reason'));
+  const issue = ownString(loop, 'issue');
+  const retry = ownCount(loop, 'retry');
+  const limits = ownObject(loop, 'limits') ?? {};
+  const maxRetry = ownCount(limits, 'max_retry');
+  const maxMinutes = ownCount(limits, 'max_minutes');
+  const startedAt = ownString(loop, 'started_at');
+  const required = [issue, retry, maxRetry, maxMinutes, startedAt];
+  if (status === null || !Object.hasOwn(LOOP_STATES, status) || required.some((v) => v === null) || Number.isNaN(Date.parse(startedAt))) {
+    return unknownLoopPanel(undefined);
+  }
+  const gates = ownObject(loop, 'gates') ?? {};
+  const elapsedMs = nowMs - Date.parse(startedAt);
+  const showElapsed = status === 'running' && Number.isFinite(nowMs) && Number.isFinite(elapsedMs);
+  return {
+    state: status,
+    stateLabel: LOOP_STATES[status].label,
+    className: LOOP_STATES[status].className,
+    issue,
+    retryText: `${retry} / ${maxRetry}`,
+    gates: LOOP_GATES.map((gate) => {
+      const result = ownObject(gates, gate)?.result;
+      return { gate, label: result === 'pass' || result === 'fail' ? GATE_LABELS[result] : GATE_NOT_RUN };
+    }),
+    elapsedText: showElapsed ? `壁時計 ${Math.max(0, Math.floor(elapsedMs / MS_PER_MINUTE))}分 / 上限 ${maxMinutes}分` : '',
+    haltReason: status === 'halted' ? (ownString(loop, 'halt_reason') ?? '') : '',
+  };
+}
+
 // ---------- DOM（document がある時だけ） ----------
 
 function el(tag, text, className) {
@@ -140,6 +218,22 @@ function renderSessions(sessions) {
     return row([r.session, r.statusLabel, r.lastSeen], [undefined, statusClass(session.status)]);
   }));
   document.getElementById('sessions-empty').hidden = sessions.length > 0;
+}
+
+function renderLoop(loop) {
+  const panel = formatLoopPanel(loop, Date.now());
+  const container = document.getElementById('loop-panel');
+  const rows = [el('p', panel.stateLabel, `loop-state ${panel.className}`)];
+  if (panel.state !== 'unknown') {
+    rows.push(
+      el('p', `Issue #${panel.issue}`),
+      el('p', `リトライ ${panel.retryText}`),
+      el('p', panel.gates.map((g) => `${g.gate} ${g.label}`).join('  ')),
+    );
+    if (panel.elapsedText !== '') rows.push(el('p', panel.elapsedText));
+    if (panel.haltReason !== '') rows.push(el('p', panel.haltReason, 'loop-halt-reason'));
+  }
+  container.replaceChildren(...rows);
 }
 
 function renderTrees(sessions) {
@@ -182,6 +276,7 @@ function startView() {
       if (!response.ok) return;
       const state = await response.json();
       if (!Array.isArray(state.sessions)) return;
+      renderLoop(state.loop);
       renderSessions(state.sessions);
       renderTrees(state.sessions);
     } catch {
@@ -212,6 +307,8 @@ function startView() {
     renderTimelineRow(body, record, timeline.length);
     scheduleRefresh();
   };
+
+  source.addEventListener('loop', scheduleRefresh);
 
   refreshState();
 }

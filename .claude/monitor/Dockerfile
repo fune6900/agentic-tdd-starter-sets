@@ -8,6 +8,7 @@ COPY server ./server
 COPY public ./public
 # 素の docker run でも起動できるよう、DB は node 所有の /data に置く（BIND は設定しない = イメージ既定はループバック listen）
 ENV MONITOR_DB=/data/monitor.db
+ENV MONITOR_LOOP_STATE=/memory/loop-state.json
 USER node
 # Host 検査がポート込みなので、実ポート（LOOP_MONITOR_PORT）を使う。http.get の既定 Host は 127.0.0.1:<port>
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 CMD ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.LOOP_MONITOR_PORT||4319,path:'/api/state'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]

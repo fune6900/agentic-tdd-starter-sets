@@ -221,7 +221,7 @@ test('[cache] 空の DB（last_seq 0）でも連打で導出を繰り返さず�
   await withServer(async (s) => {
     for (let i = 0; i < 5; i += 1) {
       const st = await getState(s.port);
-      assert.deepEqual(st.json, { sessions: [], last_seq: 0 });
+      assert.deepEqual(st.json, { sessions: [], last_seq: 0, loop: { status: 'unknown', reason: 'missing' } });
     }
     assert.equal(counter.calls, 1, `空 DB で連打して導出が ${counter.calls} 回`);
     await postEvent(s.port, fixture('SessionStart'));

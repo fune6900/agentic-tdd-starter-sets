@@ -236,7 +236,7 @@ test('[listen] bind 省略時は 127.0.0.1 で listen する', async () => {
   delete process.env.MONITOR_BIND;
   let h;
   try {
-    h = await createServer({ port: 0, dbPath: join(dir, 'monitor.db') });
+    h = await createServer({ port: 0, dbPath: join(dir, 'monitor.db'), loopStatePath: join(dir, 'no-such-loop-state.json') });
     assert.equal(h.bind, '127.0.0.1');
     assert.equal(h.server.address().address, '127.0.0.1');
   } finally {

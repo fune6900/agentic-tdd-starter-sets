@@ -432,7 +432,7 @@ test('[headers] 500（導出が例外を投げる）にもセキュリティヘ�
   const dir = makeTmpDir();
   const { createServer } = await load('server.mjs');
   const handle = await createServer({
-    port: 0, bind: '127.0.0.1', dbPath: join(dir, 'monitor.db'),
+    port: 0, bind: '127.0.0.1', dbPath: join(dir, 'monitor.db'), loopStatePath: join(dir, 'no-such-loop-state.json'),
     derive: () => { throw new Error('SECRET_BOOM_/home/user'); },
   });
   try {
