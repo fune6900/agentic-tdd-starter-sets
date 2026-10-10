@@ -243,7 +243,9 @@ case "$v" in
 esac
 
 # stdin は 2 回使う（イベント本体 / UsageSnapshot のヘッダ）ので、先に変数へ取る
-input="$(cat)"
+# bash 4.4 以降はコマンド置換が NUL で stderr に警告を出す。契約（stderr 空）を守るため警告だけ捨てる
+# （NUL を落として読む挙動は bash 3.2 と同じ）
+{ input="$(cat)"; } 2>/dev/null
 
 # jq は $HOME/.jq を暗黙に読む（-L では止まらない）。HOME を /dev/null にして ~/.jq を読めなくする
 body="$(printf '%s' "$input" | HOME=/dev/null jq -c "$JQ_PROGRAM" 2>/dev/null)"

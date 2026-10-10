@@ -23,6 +23,12 @@
 - **対処**: retry をやり直す際は、リポジトリの `.claude` と `tests` を scratchpad に複製し、Coder にはその複製だけを編集させてテストも複製で通させた。本体への差し替えは検証後に 1 回だけ行う。なお、auto mode でもフックの上書きは自己改変として拒否されるので、差し替えはユーザーの手か明示的な許可が要る
 - **次回ルール**: **`.claude/hooks/` と `.claude/settings.json` は本体で直接編集しない。** 複製上で編集して `bash -n` とテストを通してから、1 回で差し替える。フックを変える Issue では、Generator に入る前に作業ツリーの WIP をコミット（または stash ではなく scratchpad に退避）しておき、復元点を作る
 
+### 2026-10-10 / #23 手元の Mac（bash 3.2）の G1 は、CI（bash 5）でしか出ない stderr を見逃す
+- **事象**: G1〜G5 を全 PASS（手元の G1 は Docker スモークまで含む全段）にして PR を出した後、CI の Linux で `[AC5] バイナリ: stderr 空` が 1 件 FAIL。#23 で入れた `input="$(cat)"` が、stdin の NUL で `warning: command substitution: ignored null byte in input` を stderr に出していた
+- **原因**: bash 4.4 以降はコマンド置換が NUL を落とすときに警告を出すが、macOS 標準の bash 3.2 は黙って落とす。テストはフックを `bash` で起動するので、手元では bash 3.2 でしか検査されていなかった
+- **対処**: `{ input="$(cat)"; } 2>/dev/null` で警告だけを捨てる（NUL を落とす挙動は 3.2 と同じ）。再現と検証は `docker run bash:5.2`（`apk add jq curl` が要る。無いとフックが手前で exit して再現しない）
+- **次回ルール**: **フックやスクリプトでコマンド置換・`read` に外部入力を通す変更をしたら、G1 で `docker run bash:5.2` でも該当テストを流す。** 手元の G1 が PASS でも、CI のシェルの版が違えば G1 は終わっていない
+
 ### 2026-10-10 / #23 外部由来のパスは「名前で判定してから名前で開き直す」と、判定が何も守らない
 - **事象**: 送信フックが transcript を `[ -L ] / [ -e ] / [ -f ]` で判定した後、`wc -c <"$p"` と `head -c … <"$p"` で名前で開き直していた。G5 が差し替えの PoC で中 FAIL: FIFO に差し替えると背景 bash が open で永久ブロック（400 回中 97 本残留）、`/dev/zero` への symlink に差し替えると `wc -c` が辿って無制限に読んだ（`head -c` の上限は wc には効かない）。security.md は「開かない」「読む量は有界」と言い切っていた
 - **原因**: 判定と読み取りを別の open で行い、その間の差し替えを考えていなかった。#22 のサーバ側（`O_NOFOLLOW` + `fstat`）では閉じていた穴を、シェルのフックで再び開けた
