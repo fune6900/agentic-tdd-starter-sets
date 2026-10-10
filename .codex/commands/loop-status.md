@@ -18,7 +18,7 @@ grep -c "^### " .claude/memory/lessons.md
 ## 報告に含めるもの
 
 - 対象 Issue / ブランチ / 状態（running / halted / completed）
-- 余力: リトライ（現在/上限）、経過時間（現在/上限）、同一ゲート連続失敗
+- 余力: リトライ（現在/上限）、経過時間（現在/上限。`elapsed_source` が `awake` なら起きていた時間、`wall` なら壁時計）、同一ゲート連続失敗
 - ゲート状況と、失敗理由
 - history（各リトライで何を変えたか）
 - 次にやるべきこと
