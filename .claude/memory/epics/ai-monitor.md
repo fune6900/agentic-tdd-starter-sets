@@ -262,7 +262,7 @@
   - [ ] 候補（公式ドキュメントで確認した探索名。技術メモ参照）が1つでも存在する場合: その全ファイルのバイト内容と mtime が実行前後で不変、`compose.yaml` は生成されず、`include` 追記の案内が出力される
   - [ ] 既存の `compose.monitor.yml` は上書きされない（バイト不変）
   - [ ] 生成先・原本・compose 候補のいずれかがシンボリックリンク（**ダングリング含む**）なら書き込まず警告して exit 0。リンク先にファイルが作られていないことを検査
-  - [ ] 書き込みは noclobber（`set -C`）で行い、書き込み直前にリンク性と存在を再確認する
+  - [ ] 書き込みは noclobber（`set -C`）で行い、書き込み直前にリンク性と存在を再確認する（#24 G5 で強化: perl の `sysopen(O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY)` に置換。既存の上書き・リンクの追従・判定後の差し替えを 1 回の open で原子的に拒む。noclobber は通常ファイル以外へのリンクを拒めないため）
   - [ ] 2回連続実行で2回目は何も変更しない（冪等）
   - [ ] `--dry-run` は何も書かず生成内容を出す / `--quiet` は何もしなかった時に黙る / `LOOP_BOOTSTRAP=0` で何もしない / 未知の引数で exit 1
   - [ ] 出力は固定文字列のみ（外部由来の値を載せない）
@@ -272,7 +272,7 @@
   - [ ] `tests/scripts/bootstrap-monitor.test.sh` と `bash tests/run.sh` 全 PASS（shell-lint の多バイト隣接・`$( )` 内 die 検査を含む）
   - [ ] 変異テスト: symlink 検査（各対象）/ noclobber / 既存候補検出 / 冪等判定 を1つずつ外した隔離コピーで対応テストが FAIL
 - **依存**: Issue 4
-- **影響範囲**: `bootstrap-monitor.sh`（新規・`.claude` 配下の scripts ディレクトリ）, `.claude/settings.json`, `tests/scripts/bootstrap-monitor.test.sh`（新規）, `tests/scripts/lib.sh`
+- **影響範囲**: `bootstrap-monitor.sh`（新規・`.claude` 配下の scripts ディレクトリ）, `.claude/settings.json`, `tests/scripts/bootstrap-monitor.test.sh`（新規）, `tests/scripts/lib.sh`, `.claude/rules/security.md`（#24 G3 で追加: 自動書き込み経路の止まる範囲・既知の限界。教訓 #15）
 - **セキュリティ確認**: **必須**（ユーザー操作ゼロで導入先リポジトリに書き込む自動実行経路。symlink による書き込み先すり替えは本リポジトリで実際に指摘された障害クラス）
 - **リトライ上限**: 3
 - **技術的メモ**:
@@ -300,6 +300,7 @@
   - [ ] E2E（G2）: コンテナ停止状態でツール呼び出しを行い、monitor-emit の実行時間が 1 秒未満
   - [ ] スクリーンショットは確認後に削除され、`git status` に残骸が無い
   - [ ] `bash tests/run.sh` 全 PASS
+  - [ ] （#24 G3 で追加）README に次を書く: 既存 compose（直下・祖先）がある導入先では bootstrap-monitor の案内は `compose.monitor.yml` を生成した初回のセッションにしか出ない（`--quiet` のため）ので、`include` の追記は README の手順が恒久的な導線であること／環境変数や環境ファイルの `COMPOSE_FILE`・`-f` を使う導入先では生成した `compose.yaml` は読まれないので、使っている compose ファイルに `include` を追記すること／bootstrap-monitor は perl（Fcntl）を使い、perl が無い環境では compose を生成しない（#24 G3 で追加）
 - **依存**: Issue 1〜8 全て
 - **影響範囲**: `README.md`, `CLAUDE.md`, `AGENTS.md`, `tests/scripts/docs-consistency.test.sh`（必要なら）
 - **セキュリティ確認**: 不要（ドキュメントと検証のみ。G5 起動条件に該当しない。セキュリティ上の限界の記述は各実装 Issue で security.md に書き済み）
@@ -364,7 +365,7 @@
 | 4 | #20 | [x] |
 | 5 | #21 | [x] |
 | 6 | #22 | [x] |
-| 7 | #23 | [ ] |
+| 7 | #23 | [x] |
 | 8 | #24 | [ ] |
 | 9 | #25 | [ ] |
 

@@ -1017,7 +1017,7 @@ for ev in PreToolUse PostToolUse; do
   if [ "${n:-0}" -ge 1 ]; then pass; else fail "全ツール対象の登録が無い"; fi
 done
 
-it "[AC12] monitor-emit を取り除くと、既存フックの定義が main（基準 fixture）と jq 比較で完全一致"
+it "[AC12] monitor-emit を取り除くと、既存フックの定義が基準 fixture と jq 比較で完全一致（#24 で bootstrap-monitor を追加済み）"
 actual="$(jq -S -c '
   .hooks
   | with_entries(.value |= (map(.hooks |= map(select((.command // "") | test("monitor-emit") | not))) | map(select((.hooks | length) > 0))))
@@ -1025,16 +1025,16 @@ actual="$(jq -S -c '
 expected="$(jq -S -c . "$BASELINE")"
 assert_eq "$actual" "$expected"
 
-it "[AC12] 自己診断: 基準 fixture に既存 5 フックが全て入っている"
+it "[AC12] 自己診断: 基準 fixture に既存 6 フックが全て入っている"
 missing=""
-for h in pre-tool-guard loop-guard post-tool-format stop-quality-check bootstrap-project; do
+for h in pre-tool-guard loop-guard post-tool-format stop-quality-check bootstrap-project bootstrap-monitor; do
   grep -qF "$h" "$BASELINE" || missing="$missing $h"
 done
 assert_eq "$(echo "$missing" | tr -s ' ')" ""
 
-it "[AC12] 5 つの既存フックが今の settings.json にも残っている"
+it "[AC12] 6 つの既存フックが今の settings.json にも残っている"
 missing=""
-for h in pre-tool-guard loop-guard post-tool-format stop-quality-check bootstrap-project; do
+for h in pre-tool-guard loop-guard post-tool-format stop-quality-check bootstrap-project bootstrap-monitor; do
   grep -qF "$h" "$SETTINGS" || missing="$missing $h"
 done
 assert_eq "$(echo "$missing" | tr -s ' ')" ""

@@ -52,6 +52,14 @@
           "command": "bash $CLAUDE_PROJECT_DIR/.claude/scripts/bootstrap-project.sh --quiet"
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CLAUDE_PROJECT_DIR/.claude/scripts/bootstrap-monitor.sh --quiet"
+        }
+      ]
     }
   ]
 }
