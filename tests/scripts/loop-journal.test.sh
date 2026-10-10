@@ -110,6 +110,36 @@ assert_file_contains "$SANDBOX_VAULT/projects/proj.md" "#### "
 it "flush が内部ジャーナルを削除する"
 assert_no_file "$SANDBOX_JOURNAL/ep1.md"
 
+# ── 大きなジャーナルの flush（Issue #43 の回帰テスト）──
+# 事象: 67 エントリ・524 行が Vault に着地したのに、確認処理の `tail -n N | grep -qF 見出し` が
+# pipefail の下で SIGPIPE（141）になり、flush が失敗扱いになった。見出しは追記分の先頭にあり、
+# grep -q が最初の一致で終わると、パイプバッファより大きい tail の出力が書き込み先を失う。
+# 小さな入力ではバッファに収まって通るので、サイズで再現条件を作る（600 エントリ・数百 KB）。
+# 変異対応: 確認処理を `tail | grep -qF` の形に戻すと、下の 1 つ目（exit 0）が FAIL する。
+new_sandbox
+journal init "$SANDBOX_VAULT" >/dev/null 2>&1
+journal start big >/dev/null 2>&1
+BIG_ENTRIES=600
+awk -v n="$BIG_ENTRIES" 'BEGIN {
+  for (i = 1; i <= n; i++) {
+    printf "\n## 2026-01-01T00:00Z / #%d / impl — big entry %d\n\n", i, i
+    for (j = 1; j <= 8; j++) printf "- **line %d**: %s\n", j, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+}' >> "$SANDBOX_JOURNAL/big.md"
+
+it "大きなジャーナルの flush は着地していれば成功する（exit 0）"
+echo "- **結果**: 完了" | journal flush >/dev/null 2>&1
+assert_eq "$?" "0"
+
+it "大きなジャーナルの flush で complete 見出しは Vault にちょうど 1 回"
+assert_eq "$(grep -cF "epic: big / complete" "$SANDBOX_VAULT/projects/proj.md")" "1"
+
+it "大きなジャーナルの全エントリが Vault に書き写される"
+assert_eq "$(grep -c '^#### .* / impl — big entry ' "$SANDBOX_VAULT/projects/proj.md")" "$BIG_ENTRIES"
+
+it "大きなジャーナルの flush 後に内部ジャーナルが削除される"
+assert_no_file "$SANDBOX_JOURNAL/big.md"
+
 # ══════════════════════════════════════════════
 suite "loop-journal: 記録を失わないこと（最重要）"
 # ══════════════════════════════════════════════

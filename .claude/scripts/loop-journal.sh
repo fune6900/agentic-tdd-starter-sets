@@ -764,8 +764,13 @@ cmd_flush() {
   after="$(wc -l < "$vf" | tr -d " ")"
   appended=$(( after - before ))
   [ "$appended" -gt 0 ] || die "Vault に1行も追記されていない。ジャーナルは残した: $jf"
-  tail -n "$appended" "$vf" | grep -qF "$header" \
-    || die "Vault への書き込みが確認できない。ジャーナルは残した: $jf"
+  # パイプにしない: grep -q が先に終わると tail が SIGPIPE になり、pipefail で
+  # 着地済みでも失敗と判定される（大きなジャーナル）。親シェルの変数で判定する。
+  added="$(tail -n "$appended" "$vf")"
+  case "$added" in
+    *"$header"*) ;;
+    *) die "Vault への書き込みが確認できない。ジャーナルは残した: $jf" ;;
+  esac
 
   touch_updated "$vf"
 
