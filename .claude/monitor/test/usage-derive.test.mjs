@@ -131,12 +131,44 @@ test('別セッションのスナップショットは混ざらない', async ()
   assert.equal(outTokens(b.tree), 11);
 });
 
-test('モデルが複数あれば usage_total は全モデルを合算する。ok で models が空なら 0', async () => {
+test('モデルが複数あれば usage_total は全モデルを合算する', async () => {
   const s = await only([...base(), okU(3, [entry({ model: 'a' }), entry({ model: 'b', output_tokens: 5 })])]);
   assert.equal(s.usage_total.tokens.output, 25);
-  const empty = await only([...base(), okU(3, [])]);
-  assert.deepEqual(empty.tree.usage, { status: 'ok', models: [] });
-  assert.deepEqual(empty.usage_total.tokens, { input: 0, output: 0, cache_creation: 0, cache_read: 0 });
+});
+
+// Issue #41: ok で models が空は「使用量 0」ではなく「集計できていない」。以前は ok/[] のまま 0 円に見せていた
+test('ok で models が空配列なら unknown/incomplete（0 円にしない）。メインでもサブでも', async () => {
+  const main = await only([...base(), okU(3, [])]);
+  assert.deepEqual(main.tree.usage, { status: 'unknown', reason: 'incomplete' });
+  const sub = await only([...base(), subStart(3, 'aaa1'), okU(4, [], 'aaa1')]);
+  assert.deepEqual(child(sub, 'aaa1').usage, { status: 'unknown', reason: 'incomplete' });
+});
+
+test('ok で models が空配列は totalUsage で unknown として数える（トークンもコストの known にも入れない）', async () => {
+  const s = await only([...base(), subStart(3, 'aaa1'), okU(4, [], 'aaa1')]);
+  assert.equal(s.usage_total.unknown_snapshots, 1);
+  assert.equal(s.usage_total.cost.unknown_count, 1);
+  assert.equal(s.usage_total.cost.known_count, 0);
+  assert.deepEqual(s.usage_total.tokens, { input: 0, output: 0, cache_creation: 0, cache_read: 0 });
+});
+
+test('サブが ok/[]、メインが ok の値ありでも、メインの数値は残りサブだけが unknown になる', async () => {
+  const s = await only([...base(), subStart(3, 'aaa1'), okU(4, [entry({ output_tokens: 7 })]), okU(5, [], 'aaa1')]);
+  assert.equal(outTokens(s.tree), 7);
+  assert.deepEqual(child(s, 'aaa1').usage, { status: 'unknown', reason: 'incomplete' });
+  assert.equal(s.usage_total.unknown_snapshots, 1);
+});
+
+test('unknown/incomplete のスナップショットも unknown として表示・合計される（受信側が新しい理由を通す）', async () => {
+  const s = await only([...base(), subStart(3, 'aaa1'), unkU(4, 'incomplete', 'aaa1')]);
+  assert.deepEqual(child(s, 'aaa1').usage, { status: 'unknown', reason: 'incomplete' });
+  assert.equal(s.usage_total.unknown_snapshots, 1);
+});
+
+test('同じサブで ok/[] の後に値ありの ok が来れば、seq が大きい方（値あり）が勝つ', async () => {
+  const s = await only([...base(), subStart(3, 'aaa1'), okU(4, [], 'aaa1'), okU(5, [entry({ output_tokens: 423 })], 'aaa1')]);
+  assert.equal(outTokens(child(s, 'aaa1')), 423);
+  assert.equal(s.usage_total.unknown_snapshots, 0);
 });
 
 test('usage_total の形: estimate は常に true、cost は known_micro_usd / known_count / unknown_count', async () => {

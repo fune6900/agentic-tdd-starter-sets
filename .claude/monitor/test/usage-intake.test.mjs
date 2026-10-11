@@ -40,7 +40,7 @@ const unkSnap = (reason = 'too_large', extra = {}) => ({
 const NUM_KEYS = ['input_tokens', 'output_tokens', 'cache_creation_5m_input_tokens', 'cache_creation_1h_input_tokens', 'cache_read_input_tokens'];
 const BOOL_KEYS = ['fast_mode', 'us_inference', 'variant_unknown', 'cache_split_unknown'];
 const ENTRY_KEYS = ['model', 'message_count', ...NUM_KEYS, ...BOOL_KEYS];
-const REASONS = ['no_path', 'symlink', 'not_regular_file', 'too_large', 'read_failed', 'parse_failed', 'invalid_usage', 'too_many_models', 'out_of_range'];
+const REASONS = ['no_path', 'symlink', 'not_regular_file', 'too_large', 'read_failed', 'parse_failed', 'invalid_usage', 'too_many_models', 'out_of_range', 'incomplete'];
 
 async function ok(obj, label) {
   const r = await validate(obj);
@@ -136,6 +136,14 @@ test('unknown なのに unknown_reason が無い、は拒否', async () => {
 
 test('usage_status が列挙外・型違いは拒否', async () => {
   for (const v of ['OK', 'Unknown', 'error', '', 'ok\n', null, 1, true, ['ok']]) await ng(okSnap([entry()], { usage_status: v }), String(v));
+});
+
+test('incomplete（transcript が未完のまま）を unknown_reason として受理する。近い綴りは拒否（Issue #41）', async () => {
+  await ok(unkSnap('incomplete', { agent_id: 'aaaaaaaaaaaaaaaaa' }), 'incomplete + agent_id');
+  await ok(unkSnap('incomplete'), 'incomplete');
+  for (const v of ['Incomplete', 'incomplete\n', 'incompleted', 'incomplete ', 'partial']) await ng(unkSnap(v), JSON.stringify(v));
+  await ng(okSnap([entry()], { unknown_reason: 'incomplete' }), 'ok なのに incomplete');
+  await ng(unkSnap('incomplete', { models: [] }), 'incomplete なのに models');
 });
 
 test('列挙外の unknown_reason は拒否（大文字小文字・改行・型違いを含む）', async () => {

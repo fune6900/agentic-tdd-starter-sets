@@ -146,7 +146,7 @@ end
 
 # 2つ目: 入力は 1 行目 = ヘッダ JSON、2 行目 = シェルが先に決めた unknown の理由（無ければ空行）、
 #   3 行目以降 = transcript の生テキスト。集計規則は event-schema.md「集計規則」の 1〜9。
-#   優先順位: parse_failed > invalid_usage > too_many_models > out_of_range（全行を見終えてから決める。
+#   優先順位: incomplete（SubagentStop のみ）> parse_failed > invalid_usage > too_many_models > out_of_range（全行を見終えてから決める。
 #   順序は def why に上から書いてある）
 # 数値リテラルの上限は .claude/monitor/server/schema.mjs と同値:
 #   8 = MAX_MODELS / 1000000 = MAX_MESSAGE_COUNT / 1000000000000 = MAX_USAGE_TOKENS
@@ -178,13 +178,16 @@ def norm:
          variant: (($u.speed | IN(null, "standard", "fast") | not) or ($u.inference_geo | IN(null, "not_available", "global", "us") | not))}
     end;
 
-# 段 1: transcript の全行を数える。入力 = なし（inputs を読む）。出力 = {bad, anon, ids}
+# 段 1: transcript の全行を数える。入力 = なし（inputs を読む）。出力 = {bad, anon, ids, last_asst}
+#   last_asst = isMeta:true の行を除いた最後の非空行が、JSON として読めて type == "assistant" か
 def tally:
-  reduce inputs as $l ({bad: false, anon: false, ids: {}};
+  reduce inputs as $l ({bad: false, anon: false, ids: {}, last_asst: false};
     if ($l | test("\\A[ \\t\\r]*\\z")) then .
     else ($l | try [fromjson] catch null) as $w
-      | if $w == null then .bad = true else
+      | if $w == null then .bad = true | .last_asst = false else
           $w[0] as $j
+          | if ($j | type) == "object" and $j.isMeta == true then .
+            else .last_asst = (($j | type) == "object" and $j.type == "assistant") end
           | if ($j | type) == "object" and $j.type == "assistant"
                and ($j.message | type) == "object" and ($j.message.usage | type) == "object" then
               $j.message as $m
@@ -227,7 +230,7 @@ def why($s; $rows; $ms):
     tally as $s
     | ([$s.ids[] | norm]) as $rows
     | ($rows | to_models) as $ms
-    | why($s; $rows; $ms) as $why
+    | (if $h.aid != null and ($s.last_asst | not) then "incomplete" else why($s; $rows; $ms) end) as $why
     | if $why then out(unk($why)) else out({usage_status: "ok", models: $ms}) end
   end
 '
@@ -296,7 +299,7 @@ print "\n", $buf;
 
 # UsageSnapshot は別の背景グループ。前景は transcript に触れない（判定・読み取り・集計・送信は全て背景）。
 #   - パスは環境変数と perl の中だけで扱う（jq / curl / perl の argv に載せない）。一時ファイルは作らない
-#   - 開くのは perl の sysopen 1 回だけ。判定は fd 上（FIFO・デバイス・ディレクトリは読まない）
+#   - 開くのは perl の sysopen 1 回だけ（読み直しも各回が独立の 1 回 open）。判定は fd 上（FIFO・デバイス・ディレクトリは読まない）
 #   - 読み取りは上限 + 1 バイトで打ち切る。超過分が 1 バイトでも読めたら too_large
 #   - perl の設定・モジュールの探索パスは外部の環境変数で変えさせない
 case "$body" in
@@ -306,14 +309,22 @@ case "$body" in
       [ -n "$meta" ] || exit 0
       hdr="${meta%% *}"
       tpath="${meta#* }"
-      out="$({
-        printf '%s\n' "$hdr"
-        if [ -z "$tpath" ]; then printf 'no_path\n'
-        elif command -v perl >/dev/null 2>&1; then
-          TPATH="$tpath" MAXB="$max" env -u PERL5LIB -u PERL5OPT -u PERLLIB -u PERL5DB -u PERL_UNICODE -u PERLIO perl -e "$PERL_READ" 2>/dev/null \
-            || printf 'read_failed\n'
-        else printf 'read_failed\n'; fi
-      } | HOME=/dev/null jq -nRc "$JQ_USAGE" 2>/dev/null)"
+      # SubagentStop の最後の assistant 行は、発火と同時〜100ms 後に書かれる（実測）。
+      # 背景処理は約 20ms 後に読むので、未完（incomplete）なら読み直す。待ちは累計 2.0 秒以内。
+      # 読み直しも毎回 PERL_READ が 1 回 open する。名前での判定・別経路の読み取りは作らない
+      out=""
+      for delay in 0 0.2 0.3 0.5 1.0; do
+        [ "$delay" = 0 ] || sleep "$delay"
+        out="$({
+          printf '%s\n' "$hdr"
+          if [ -z "$tpath" ]; then printf 'no_path\n'
+          elif command -v perl >/dev/null 2>&1; then
+            TPATH="$tpath" MAXB="$max" env -u PERL5LIB -u PERL5OPT -u PERLLIB -u PERL5DB -u PERL_UNICODE -u PERLIO perl -e "$PERL_READ" 2>/dev/null \
+              || printf 'read_failed\n'
+          else printf 'read_failed\n'; fi
+        } | HOME=/dev/null jq -nRc "$JQ_USAGE" 2>/dev/null)"
+        case "$out" in *'"unknown_reason":"incomplete"'*) ;; *) break ;; esac
+      done
       [ -n "$out" ] || exit 0
       printf '%s' "$out" | curl -q -s --noproxy '*' --connect-timeout 1 --max-time 3 \
         -H 'Content-Type: application/json' --data-binary @- \
