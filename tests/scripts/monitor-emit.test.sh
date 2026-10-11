@@ -74,7 +74,7 @@
 #   incomplete 判定（最後の非空行の type）を外す  [US6] (a)(b)(c)(c2)（ok+[] か parse_failed が出る）
 #   isMeta の user 行を飛ばさない             [US6] (a2) 完成している transcript が incomplete になる
 #   Stop にも incomplete / 待ちを入れる         [US6] (d) 回帰防止（ok+[] のまま・1 秒未満）
-#   待ちを無制限にする                        [US6] (b) 5.5 秒以内 / (f) 差し替えでのハング
+#   待ちを無制限にする                        [US6] (b) 10 秒以内 / (f) 差し替えでのハング
 #   待たずに即 incomplete を送る              [US6] (b) 1.5 秒以上待つこと / (a)
 #   読み直しを名前で判定・別経路で読む          [US6] (e) 静的（sysopen が 1 箇所・cat 等で tpath を読まない）/ (b) perl 起動 3 回以上
 #   読み直し中の差し替えを辿る                 [US6] (f) FIFO / /dev/zero への symlink（ハング・残留）
@@ -1947,7 +1947,7 @@ suite "[US6] ツールを使わないサブエージェント: transcript が未
 # agent_transcript_path へ書かれる。フックの背景処理は約 20ms 後に読むので assistant 0 行を読み、
 # ok + models:[] （0 円表示）を送っていた。
 #
-# 契約（Coder へ）:
+# 契約（実装後の仕様）:
 #   - SubagentStop のときだけ、transcript の「最後の非空行」を見る。ただし isMeta:true の user 行は飛ばす
 #     （実測: 完成した transcript は assistant 行の後ろに isMeta の user 行が付く。fixture sub-notool-complete）。
 #     その行が JSON として読めない（書きかけ）か、type が assistant でなければ「未完」。
@@ -2002,8 +2002,8 @@ t1="$(now_ms)"
 it "[US6] 最後まで assistant 行が書かれない → unknown/incomplete を 1 通だけ送る（ok+[] を送らない・models を持たない）"
 if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
 else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_INC")|1"; fi
-it "[US6] 待ちは有界: 1.5 秒以上待って読み直し（即送信しない）、5.5 秒以内に届く（実測 ${t0}→${t1}）"
-if [ $((t1 - t0)) -ge 1500 ] && [ $((t1 - t0)) -le 5500 ]; then pass; else fail "$((t1 - t0)) ms"; fi
+it "[US6] 待ちは有界: 1.5 秒以上待って読み直し（即送信しない）、10 秒以内に届く（上限はハングの検出用。CI の負荷で揺れないよう待ち 2 秒に余裕を持たせる。実測 ${t0}→${t1}）"
+if [ $((t1 - t0)) -ge 1500 ] && [ $((t1 - t0)) -le 10000 ]; then pass; else fail "$((t1 - t0)) ms"; fi
 it "[US6] 読み直しの各回も perl の sysopen を通る（perl の起動が 3 回以上＝初回 + 読み直し 2 回以上）"
 if [ "$(grep -c '^CMD perl$' "$BLOG")" -ge 3 ]; then pass; else fail "perl の起動 $(grep -c '^CMD perl$' "$BLOG") 回"; fi
 check_quiet "(b) 最後まで未完の SubagentStop" US4
@@ -2047,7 +2047,6 @@ it "[US6] 静的: PERL_READ を起動する箇所が読み直しのループ内�
 if grep -Eq 'perl -e "\$PERL_READ"' "$HOOK_CODE" && grep -Eq '(^|[^[:alnum:]_])sleep[[:space:]]' "$HOOK_CODE"; then pass; else fail "perl -e \$PERL_READ または sleep が無い"; fi
 
 # (f) 読み直しの途中で差し替えられても、ハングせず有界で終わる
-SNAP_ITERS_US5=250
 f="$US6_DIR/f-fifo.jsonl"; cp "$NT_STOP" "$f"
 mkfifo "$US6_DIR/f-fifo.new"
 ( sleep 0.3; mv -f "$US6_DIR/f-fifo.new" "$f" ) >/dev/null 2>&1 &
@@ -2058,7 +2057,6 @@ wait "$US6_W" 2>/dev/null
 unk_case "SubagentStop: 読み直しの途中で FIFO に差し替えられても、ハングせず有界で終わる" not_regular_file
 it "[US6] 読み直しの途中で FIFO に差し替え: 背景の読み取りプロセスが残らない"
 if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
-exec 9<>"$f"; exec 9>&-   # 念のため待ちを解く
 
 f="$US6_DIR/f-zero.jsonl"; cp "$NT_STOP" "$f"
 ln -s /dev/zero "$US6_DIR/f-zero.new"

@@ -108,7 +108,7 @@ Stop / SubagentStop 時に transcript の `message.usage` を集計した**数�
 | `agent_id` | 任意 | SubagentStop 由来の時だけ付く。メイン（Stop 由来）は**キーを持たない**。既存の規則（`[A-Za-z0-9]` 最大64バイト） |
 | `usage_status` | 必須 | `ok` / `unknown` |
 | `unknown_reason` | `unknown` の時のみ必須 | 下記10種 |
-| `models` | `ok` の時のみ必須 | 0〜8個の配列（要素は下記）。`ok` で空配列は「assistant の usage 行が1件も無い」を表し、0 トークンが事実 |
+| `models` | `ok` の時のみ必須 | 0〜8個の配列（要素は下記）。`ok` で空配列は Stop（メイン）だけが送りうる（assistant の usage 行が1件も無い。0 トークンが事実）。SubagentStop は `ok` + 空配列を送らず、未完なら `incomplete`。受信側は `ok` + 空配列を `unknown` / `incomplete` と同じ「不明」として扱う（下の `incomplete` の項を参照） |
 
 以上の他のキーは受信側が拒否する。`agent_type` は載せない（ノードは SubagentStart が作る）。
 

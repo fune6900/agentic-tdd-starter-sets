@@ -313,8 +313,8 @@ case "$body" in
       # 背景処理は約 20ms 後に読むので、未完（incomplete）なら読み直す。待ちは累計 2.0 秒以内。
       # 読み直しも毎回 PERL_READ が 1 回 open する。名前での判定・別経路の読み取りは作らない
       out=""
-      for wait in 0 0.2 0.3 0.5 1.0; do
-        [ "$wait" = 0 ] || sleep "$wait"
+      for delay in 0 0.2 0.3 0.5 1.0; do
+        [ "$delay" = 0 ] || sleep "$delay"
         out="$({
           printf '%s\n' "$hdr"
           if [ -z "$tpath" ]; then printf 'no_path\n'
