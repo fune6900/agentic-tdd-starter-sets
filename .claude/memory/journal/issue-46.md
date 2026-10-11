@@ -34,3 +34,10 @@ status: active
 - **G3 の判断**: 「ゲートを通すためのテスト削除」に当たらない。#24 の「差分 0」が守ろうとしたのはバイト列ではなく「monitor の追加が project の動作を壊さない」で、共存 7 件と settings.json suite（同ファイル 1065〜1087 行）が守る。project.sh 自体の誤りは bootstrap.test.sh の担当
 - **Refactor**: G4 中「monitor が早期離脱しても .github 系の 2 件が PASS する」→ 合格条件に compose.monitor.yml の存在を追加し、`exit 0` を差し込む変異で FAIL を確認。低: co_project も `--quiet`（本番フックと同じ）、`CI` → `CI_FILE`、コメント補足。再 G1 で 13 スイート PASS・shellcheck 0
 - **次**: PR
+
+## 2026-10-11T01:59Z / #46 / done — PR #48 作成・全ゲート PASS
+
+- **やったこと**: PR #48 を作成。G1〜G4 PASS（G5 は起動条件外）、retry 0。Refactor（空振り防止・--quiet 統一・CI_FILE 改名）後に G1 を再実行して PASS
+- **なぜ**: 凍結を解く鍵は「#24 の差分 0 が何を守ろうとしていたか」を壊し方 2 つ（CI 生成への影響・.github への接触）に言い換えたこと。そうすればファイル内容を固定せずに意図を守れる
+- **残課題**: なし。マージ後に issue-46 のジャーナルを Vault へ flush する
+- **次**: マージ判断（ユーザー）
