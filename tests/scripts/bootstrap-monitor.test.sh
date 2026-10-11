@@ -379,6 +379,177 @@ runbm
 assert_file "$P/compose.yaml"
 
 # ══════════════════════════════════════════════
+suite "案内文の出し分け（直下の候補か、祖先にだけある候補か。Issue #42）"
+# ══════════════════════════════════════════════
+# 祖先の compose に直下用の include 例（path: compose.monitor.yml / project_directory: .）を
+# 追記すると docker compose config が失敗する。祖先にだけ候補がある時は固定の祖先用文言を出す。
+# 変異: 直下/祖先の判定を入れ替える → [祖先案内] [直下案内] [両方] が FAIL
+#       祖先用文言に直下用の例を混ぜる → [祖先案内/直下用の例が無い] が FAIL
+
+# 従来の案内文（直下に候補がある時。1 文字も変えない契約なので期待値を固定する）
+GUIDE_DIRECT="compose ファイルが既にあるので compose.yaml は作らない。監視も一緒に起動するには、
+既存の compose ファイルに次の include を追記してください（Compose v2.20.0 以降）。
+  include:
+    - path: compose.monitor.yml
+      project_directory: .
+compose.monitor.yml はネットワーク monitor-net とボリューム monitor-data を定義する。既存の定義と名前が衝突しないか確認すること。"
+README_ANCESTOR_SECTION="既存の compose ファイルがある場合"
+
+# 出力に直下用の例の行（インデント・ハイフン有無を問わず）があるか
+has_direct_example() {
+  printf '%s\n' "$1" | grep -Eq '^[[:space:]]*(-[[:space:]]+)?path:[[:space:]]+compose\.monitor\.yml[[:space:]]*$|^[[:space:]]*project_directory:[[:space:]]+\.[[:space:]]*$'
+}
+
+# 祖先にだけ候補を置く: <depth> <name> → P と HOLDER を設定。ディレクトリ名は検査しやすい固有名
+ancestor_only() {
+  new_sandbox
+  case "$1" in
+    1) HOLDER="$SANDBOX_ROOT/UNIQANCzq1"; mkproj "$HOLDER/UNIQPROJxk1" ;;
+    2) HOLDER="$SANDBOX_ROOT/UNIQANCzq2"; mkproj "$HOLDER/UNIQMIDmm2/UNIQPROJxk2" ;;
+  esac
+  put_cand "$HOLDER" "$2"
+}
+
+# 直下に候補を置く（祖先は無い）: <name>
+direct_only() {
+  new_sandbox
+  mkproj "$SANDBOX_ROOT/UNIQDIRzq/UNIQPROJxk"
+  put_cand "$P" "$1"
+}
+
+# 直下と祖先の両方に候補を置く: <直下の name>
+direct_and_ancestor() {
+  new_sandbox
+  mkproj "$SANDBOX_ROOT/UNIQANCzq/UNIQPROJxk"
+  put_cand "$P" "$1"
+  put_cand "$SANDBOX_ROOT/UNIQANCzq" compose.yml
+}
+
+for depth in 1 2; do
+  for name in compose.yaml docker-compose.yml compose.override.yaml; do
+    ancestor_only "$depth" "$name"
+    runbm
+    gen_out="$LAST_OUTPUT"
+    ancestor_only "$depth" "$name"
+    runbm --dry-run
+    dry_out="$LAST_OUTPUT"
+
+    for kind in 生成時 dry-run; do
+      if [ "$kind" = "生成時" ]; then out="$gen_out"; else out="$dry_out"; fi
+
+      it "[祖先案内/直下用の例が無い] ${depth}階層上の $name ($kind): path: compose.monitor.yml 行と project_directory: . 行を出さない"
+      if has_direct_example "$out"; then fail "直下用の例が出ている" "出力: $out"; else pass; fi
+
+      it "[祖先案内/祖先用の文言] ${depth}階層上の $name ($kind): 「祖先」・README の節名・include・compose.monitor.yml を含む"
+      case "$out" in
+        *祖先*"$README_ANCESTOR_SECTION"*|*"$README_ANCESTOR_SECTION"*祖先*)
+          case "$out" in *include*compose.monitor.yml*|*compose.monitor.yml*include*) pass ;; *) fail "include と compose.monitor.yml が無い" "出力: $out" ;; esac ;;
+        *) fail "祖先用の文言（祖先・README の節名）が無い" "出力: $out" ;;
+      esac
+
+      it "[祖先案内/相対パスの注意] ${depth}階層上の $name ($kind): path と project_directory を相対パスに合わせる旨がある"
+      case "$out" in
+        *path*project_directory*相対*|*相対*path*project_directory*) pass ;;
+        *) fail "相対パスに合わせる旨が無い" "出力: $out" ;;
+      esac
+
+      it "[祖先案内/名前衝突] ${depth}階層上の $name ($kind): monitor-net と monitor-data の衝突注意を含む"
+      case "$out" in *monitor-net*monitor-data*) pass ;; *) fail "衝突注意が無い" "出力: $out" ;; esac
+
+      it "[祖先案内/固定文字列] ${depth}階層上の $name ($kind): 実際のディレクトリ名・サンドボックスのパスを載せない"
+      case "$out" in
+        *UNIQ*|*"$SANDBOX_ROOT"*) fail "外部由来の値が載った" "出力: $out" ;;
+        *) pass ;;
+      esac
+
+      it "[祖先案内/例は sub のみ] ${depth}階層上の $name ($kind): 例を出すなら仮名 sub の形だけ（sub/compose.monitor.yml と project_directory: sub）"
+      # 例の行（path: / project_directory: を含む行）は sub を使った形しか許さない
+      bad="$(printf '%s\n' "$out" | grep -E 'path:|project_directory:' | grep -Ev 'path:[[:space:]]+sub/compose\.monitor\.yml|project_directory:[[:space:]]+sub[[:space:]]*$')"
+      assert_eq "$bad" ""
+    done
+  done
+done
+
+# 祖先にだけ候補: 2 回目の --quiet は無出力、非 quiet は祖先用の文言が出る
+ancestor_only 1 compose.yaml
+runbm
+runbm --quiet
+it "[祖先案内/quiet] 祖先のみ・2 回目のセッションの --quiet は無出力"
+assert_eq "$LAST_OUTPUT" ""
+
+ancestor_only 1 compose.yaml
+runbm
+runbm
+it "[祖先案内/非生成時] 祖先のみ・2 回目（非 quiet）も祖先用の文言を出し、直下用の例を出さない"
+if has_direct_example "$LAST_OUTPUT"; then fail "直下用の例が出ている" "出力: $LAST_OUTPUT"
+else
+  case "$LAST_OUTPUT" in *祖先*"$README_ANCESTOR_SECTION"*|*"$README_ANCESTOR_SECTION"*祖先*) pass ;; *) fail "祖先用の文言が無い" "出力: $LAST_OUTPUT" ;; esac
+fi
+
+# 直下に候補（祖先なし）: 従来の案内文が一致する（生成時・2 回目・dry-run）
+for name in compose.yaml docker-compose.override.yml; do
+  direct_only "$name"
+  runbm
+  gen_out="$LAST_OUTPUT"
+  runbm
+  again_out="$LAST_OUTPUT"
+  direct_only "$name"
+  runbm --dry-run
+  dry_out="$LAST_OUTPUT"
+  for pair in "生成時:$gen_out" "2回目:$again_out" "dry-run:$dry_out"; do
+    it "[直下案内] $name (${pair%%:*}): 従来の案内文と一致する"
+    case "${pair#*:}" in *"$GUIDE_DIRECT"*) pass ;; *) fail "従来の案内文を含まない" "出力: ${pair#*:}" ;; esac
+    it "[直下案内] $name (${pair%%:*}): 祖先用の文言（README の節名）を出さない"
+    case "${pair#*:}" in *"$README_ANCESTOR_SECTION"*) fail "祖先用の文言が出ている" ;; *) pass ;; esac
+  done
+done
+
+it "[直下案内/quiet] 直下のみ・2 回目のセッションの --quiet は無出力"
+direct_only compose.yaml
+runbm
+runbm --quiet
+assert_eq "$LAST_OUTPUT" ""
+
+# 直下と祖先の両方: 直下用（従来）が出て、祖先用は出ない
+for name in compose.yaml docker-compose.yml; do
+  direct_and_ancestor "$name"
+  runbm
+  gen_out="$LAST_OUTPUT"
+  direct_and_ancestor "$name"
+  runbm --dry-run
+  dry_out="$LAST_OUTPUT"
+  for pair in "生成時:$gen_out" "dry-run:$dry_out"; do
+    it "[両方] 直下 $name と祖先の両方 (${pair%%:*}): 従来の案内文が出る"
+    case "${pair#*:}" in *"$GUIDE_DIRECT"*) pass ;; *) fail "従来の案内文を含まない" "出力: ${pair#*:}" ;; esac
+    it "[両方] 直下 $name と祖先の両方 (${pair%%:*}): 祖先用の文言を出さない"
+    case "${pair#*:}" in *"$README_ANCESTOR_SECTION"*) fail "祖先用の文言が出ている" ;; *) pass ;; esac
+  done
+done
+
+# 固定文字列: プロジェクトのパスを変えても出力がバイト一致する
+# （サブシェルで new_sandbox を呼ぶと後始末の配列が失われるので、グローバル変数 FIX_OUT で受ける）
+fixed_out() { # <anc|dir> <ディレクトリ名> <プロジェクト名> <gen|dry|again>
+  new_sandbox
+  mkproj "$SANDBOX_ROOT/$2/$3"
+  if [ "$1" = "anc" ]; then put_cand "$SANDBOX_ROOT/$2" compose.yaml; else put_cand "$P" compose.yaml; fi
+  case "$4" in
+    dry) runbm --dry-run ;;
+    again) runbm; runbm ;;
+    *) runbm ;;
+  esac
+  FIX_OUT="$LAST_OUTPUT"
+}
+for mode in gen dry again; do
+  for kind in anc dir; do
+    if [ "$kind" = "anc" ]; then label="祖先のみ"; else label="直下のみ"; fi
+    it "[固定文字列/$label] ($mode) 異なる名前のディレクトリでも出力がバイト一致する"
+    fixed_out "$kind" AAAA_one proj_alpha "$mode"; a="$FIX_OUT"
+    fixed_out "$kind" Bz-two.dir p2 "$mode"; b="$FIX_OUT"
+    assert_eq "$a" "$b"
+  done
+done
+
+# ══════════════════════════════════════════════
 suite "祖先の symlink 候補（ダングリング含む）"
 # ══════════════════════════════════════════════
 

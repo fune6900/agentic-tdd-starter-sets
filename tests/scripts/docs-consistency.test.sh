@@ -491,6 +491,17 @@ it "README の監視の節に個人パス（/Users/<名前> /home/<名前>）が
 mon_terms_ok "$README_MON" "$EMIT_PORT" "$COMPOSE_MIN" || true
 case "$MON_MISSING" in *"[9]"*) fail "混入:${MON_MISSING}" ;; *) [ -n "$README_MON" ] && pass || fail "節が空（空の節を合格にしない）" ;; esac
 
+# 祖先用の案内文（bootstrap-monitor.sh の GUIDE_TEXT_ANCESTOR）が示す README の節名が実在すること（Issue #42）
+ANCESTOR_GUIDE_SECTION="既存の compose ファイルがある場合"
+
+it "README に「${ANCESTOR_GUIDE_SECTION}」の見出しが実在する（祖先用の案内文が指す節）"
+if grep -Eq "^#{2,4}[[:space:]]+${ANCESTOR_GUIDE_SECTION}[[:space:]]*\$" README.md; then pass; else fail "README に見出しが無い"; fi
+
+it "bootstrap-monitor.sh の祖先用の案内文（GUIDE_TEXT_ANCESTOR）が README の節名「${ANCESTOR_GUIDE_SECTION}」を指している"
+if grep -q '^GUIDE_TEXT_ANCESTOR=' .claude/scripts/bootstrap-monitor.sh \
+   && awk '/^GUIDE_TEXT_ANCESTOR=/{p=1} p{print} p&&/"[[:space:]]*$/&&!/^GUIDE_TEXT_ANCESTOR="[^"]*$/{exit}' .claude/scripts/bootstrap-monitor.sh | grep -q "${ANCESTOR_GUIDE_SECTION}"; then pass
+else fail "GUIDE_TEXT_ANCESTOR が無い、または節名を含まない"; fi
+
 it "[自己診断] mon_terms_ok: 全語ありは通り、語を1つ消した合成本文・空本文・個人パス混入は FAIL する"
 selfdiag_mon() {
   local full drop mut
