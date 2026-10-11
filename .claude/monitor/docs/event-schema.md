@@ -51,7 +51,7 @@
 | `duration_ms` | integer | PostToolUse | 任意 | 非負整数（小数不可）。0 以上 3,600,000（1時間）以下。範囲外・非整数・非数値は省略（丸めも切り詰めもしない）。受信側は**値が整数か**で判定するため、JSON の `1.0` や `1e3` は整数として受理する（表記は見ない） |
 | `stop_hook_active` | boolean | Stop・SubagentStop | 任意 | — |
 | `usage_status` | string（enum） | UsageSnapshot | 必須 | `ok` `unknown` のいずれか |
-| `unknown_reason` | string（enum） | UsageSnapshot | `usage_status` が `unknown` の時のみ必須（`ok` では存在不可） | 下記「集計できなかった時」の8種 |
+| `unknown_reason` | string（enum） | UsageSnapshot | `usage_status` が `unknown` の時のみ必須（`ok` では存在不可） | 下記「集計できなかった時」の10種 |
 | `models` | array | UsageSnapshot | `usage_status` が `ok` の時のみ必須（`unknown` では存在不可） | 要素はモデル別の合計。0〜8個。下記「`models` の要素」 |
 
 > `model` / `usage` は #17 で Stop / SubagentStop 用に予約していたが、一度も送られていない。#23 で `UsageSnapshot` を採用したため**削除する**（下記「`UsageSnapshot` を新イベントにした理由」）。
@@ -107,7 +107,7 @@ Stop / SubagentStop 時に transcript の `message.usage` を集計した**数�
 | `session_id` | 必須 | 既存の規則（`[A-Za-z0-9-]` 最大64バイト）。落ちたら**イベントごと送らない** |
 | `agent_id` | 任意 | SubagentStop 由来の時だけ付く。メイン（Stop 由来）は**キーを持たない**。既存の規則（`[A-Za-z0-9]` 最大64バイト） |
 | `usage_status` | 必須 | `ok` / `unknown` |
-| `unknown_reason` | `unknown` の時のみ必須 | 下記8種 |
+| `unknown_reason` | `unknown` の時のみ必須 | 下記10種 |
 | `models` | `ok` の時のみ必須 | 0〜8個の配列（要素は下記）。`ok` で空配列は「assistant の usage 行が1件も無い」を表し、0 トークンが事実 |
 
 以上の他のキーは受信側が拒否する。`agent_type` は載せない（ノードは SubagentStart が作る）。
@@ -168,8 +168,13 @@ Stop / SubagentStop 時に transcript の `message.usage` を集計した**数�
 | `invalid_usage` | 集計対象の行の数値が不正（下記）。または usage を持つ行に `message.id` が無い |
 | `too_many_models` | 異なるモデル ID（`unknown` を含む）が 8 種を超える |
 | `out_of_range` | 合計値がキー別の上限（下記）を超える |
+| `incomplete` | SubagentStop で、`isMeta: true` の行を除いた最後の非空行が assistant 行として読めないまま、約 2 秒の読み直しを終えた（ツールを使わないサブの最後の assistant 行が、読んだ時点でまだ書かれていない） |
 
-理由は**1つだけ**送る。判定の順序は、まずパス・ファイルの判定を `no_path` → （open 1 回: ELOOP なら `symlink`、他の失敗は `read_failed`）→ （fd 上の判定: `not_regular_file` → `too_large`）→ （読み取り中の失敗は `read_failed`・上限超過は `too_large`）の順に行い、全て通ったら**全行を見終えた後**に `parse_failed` → `invalid_usage` → `too_many_models` → `out_of_range` の優先で決める（同じ入力が常に同じ理由になる）。
+理由は**1つだけ**送る。判定の順序は、まずパス・ファイルの判定を `no_path` → （open 1 回: ELOOP なら `symlink`、他の失敗は `read_failed`）→ （fd 上の判定: `not_regular_file` → `too_large`）→ （読み取り中の失敗は `read_failed`・上限超過は `too_large`）の順に行い、全て通ったら**全行を見終えた後**に、SubagentStop なら `incomplete`（他のどの理由よりも優先。書きかけの最後の行も `parse_failed` ではなく `incomplete`）、次に `parse_failed` → `invalid_usage` → `too_many_models` → `out_of_range` の優先で決める（同じ入力が常に同じ理由になる）。
+
+`incomplete` の場合、送信側は読み直す（実測: end_turn の assistant 行は SubagentStop と同時〜100ms 後に書かれ、isMeta の user 行が後に付く）。読み直しは各回が独立の 1 回 open（fd 上の判定と上限 + 1 バイトが各回に掛かる）で、累計 2 秒以内（最大 5 回）。`incomplete` 以外の結果が出た時点でそれを 1 通だけ送り、最後まで未完なら `unknown` / `incomplete` を 1 通だけ送る。Stop（メイン）は `incomplete` にならず待たない。
+
+受信側は、`usage_status: "ok"` かつ `models` が空の UsageSnapshot を 0 円ではなく「不明」（`incomplete`）として表示する。
 
 `unknown` を受けたサーバは、同じ (session, agent) の直前の `ok` を**置き換える**（古い数値を残さない。残すと「今は不明」が見えなくなる）。次の Stop / SubagentStop で正しい値に戻る。
 

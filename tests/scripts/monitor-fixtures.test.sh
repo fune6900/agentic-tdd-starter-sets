@@ -620,7 +620,7 @@ snap_shape_problems() { # <path> → 問題の説明（空なら適合）
   jq -r '
     def isint: type == "number" and . == floor and . >= 0;
     def mkeys: ["model","message_count","input_tokens","output_tokens","cache_creation_5m_input_tokens","cache_creation_1h_input_tokens","cache_read_input_tokens","fast_mode","us_inference","variant_unknown","cache_split_unknown"];
-    def reasons: ["no_path","symlink","not_regular_file","too_large","read_failed","parse_failed","invalid_usage","too_many_models","out_of_range"];
+    def reasons: ["no_path","symlink","not_regular_file","too_large","read_failed","parse_failed","invalid_usage","too_many_models","out_of_range","incomplete"];
     [
       (if .schema_version != 2 then "schema_version" else empty end),
       (if .event != "UsageSnapshot" then "event" else empty end),
@@ -644,7 +644,36 @@ snap_shape_problems() { # <path> → 問題の説明（空なら適合）
     ] | join(",")' "$1" 2>/dev/null
 }
 
-for sf in "$SNAP_MAIN" "$SNAP_SUB" "$SNAP_UNK"; do
+# Issue #41: ツールを使わないサブ（SubagentStop の直後は assistant 0 行、約 100ms 後に end_turn の assistant 行が書かれる）
+SNAP_NOTOOL="$EMITTED_DIR/UsageSnapshot.sub-notool-ok.json"
+SNAP_INCOMPLETE="$EMITTED_DIR/UsageSnapshot.sub-incomplete.json"
+NT_STOP_T="$TRANSCRIPT_DIR/sub-notool-at-stop.jsonl"
+NT_DONE_T="$TRANSCRIPT_DIR/sub-notool-complete.jsonl"
+
+it "transcript/sub-notool-at-stop.jsonl は assistant 行が 0 件で、最後の行が user（SubagentStop 直後の実測）"
+assert_eq "$(jq -R -s -r '[split("\n")[] | select(test("^\\s*$")|not) | fromjson] | "\(map(select(.type=="assistant"))|length) \(last.type)"' "$NT_STOP_T" 2>/dev/null)" "0 user"
+
+it "transcript/sub-notool-complete.jsonl は同じ message.id の end_turn の assistant 行 2 つを持ち、最後の行は isMeta の user 行（約 100ms 後の実測）"
+assert_eq "$(jq -R -s -r '[split("\n")[] | select(test("^\\s*$")|not) | fromjson] | "\([.[]|select(.type=="assistant")]|length) \([.[]|select(.type=="assistant")|.message.stop_reason]|unique|join(",")) \([.[]|select(.type=="assistant")|.message.id]|unique|length) \(last.type) \(last.isMeta)"' "$NT_DONE_T" 2>/dev/null)" "2 end_turn 1 user true"
+
+for t in sub-notool-at-stop sub-notool-complete; do
+  it "transcript/${t}.jsonl に個人情報が残っていない・番兵（SNT）を含む"
+  assert_eq "$(check_no_leak_text "$TRANSCRIPT_DIR/${t}.jsonl" | tr -s ' ')|$(grep -c SNT "$TRANSCRIPT_DIR/${t}.jsonl" | tr -d ' ' | sed 's/^[1-9][0-9]*$/has/')" "|has"
+done
+
+it "emitted/UsageSnapshot.sub-notool-ok.json は transcript/sub-notool-complete.jsonl を参照実装で集計した結果と一致する"
+assert_eq "$(jq -S -c '.models' "$SNAP_NOTOOL" 2>/dev/null)" "$(ref_aggregate <"$NT_DONE_T" | jq -S -c .)"
+
+it "emitted/UsageSnapshot.sub-notool-ok.json は models が空でない（0 円表示の再発防止）"
+assert_eq "$(jq -r '(.models | length) > 0' "$SNAP_NOTOOL" 2>/dev/null)" "true"
+
+it "emitted/UsageSnapshot.sub-incomplete.json は unknown/incomplete・agent_id 付き・models なし"
+assert_eq "$(jq -c '[.usage_status,.unknown_reason,.agent_id,has("models")]' "$SNAP_INCOMPLETE" 2>/dev/null)" '["unknown","incomplete","aaaaaaaaaaaaaaaaa",false]'
+
+it "event-schema.md の unknown_reason の表に incomplete が載っている（Issue #41。表の行 \`incomplete\` | ...）"
+assert_file_contains "$SCHEMA_DOC" '| `incomplete` |'
+
+for sf in "$SNAP_MAIN" "$SNAP_SUB" "$SNAP_UNK" "$SNAP_NOTOOL" "$SNAP_INCOMPLETE"; do
   it "emitted/$(basename "$sf") は仕様どおりの形（schema_version 2・ok/unknown の排他・models の要素）"
   assert_eq "$(snap_shape_problems "$sf")" ""
 

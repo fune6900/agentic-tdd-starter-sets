@@ -10,6 +10,8 @@ const MAIN_KEY = ''; // agent_id は [A-Za-z0-9]+ なので空文字はサブと
 function toUsage(record) {
   if (record === undefined) return null;
   if (record.usage_status === 'unknown') return { status: 'unknown', reason: record.unknown_reason };
+  // ok なのに models が空 = 集計対象が 0 件。0 円表示にせず不明として扱う（Issue #41）
+  if (record.models.length === 0) return { status: 'unknown', reason: 'incomplete' };
   return {
     status: 'ok',
     models: record.models.map((m) => ({

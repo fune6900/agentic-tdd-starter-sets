@@ -69,6 +69,16 @@
 #   env -u PERL_UNICODE -u PERLIO と binmode を外す  [US5] 環境に PERL_UNICODE=SDA / 空 / D / PERLIO=:utf8 があっても ok（動作テスト）
 #   O_NOCTTY を外す                         [US5] 静的: O_NOCTTY が sysopen と同じ文に指定されている
 #
+# ── 変異テスト対応表（Issue #41 ツールを使わないサブの使用量。実装後に実施する）──
+#   読み直しを外す（1 回読んで送る）          [US6] (a) 遅れて書かれる assistant 行 / (c) 書きかけの行が完成
+#   incomplete 判定（最後の非空行の type）を外す  [US6] (a)(b)(c)(c2)（ok+[] か parse_failed が出る）
+#   isMeta の user 行を飛ばさない             [US6] (a2) 完成している transcript が incomplete になる
+#   Stop にも incomplete / 待ちを入れる         [US6] (d) 回帰防止（ok+[] のまま・1 秒未満）
+#   待ちを無制限にする                        [US6] (b) 5.5 秒以内 / (f) 差し替えでのハング
+#   待たずに即 incomplete を送る              [US6] (b) 1.5 秒以上待つこと / (a)
+#   読み直しを名前で判定・別経路で読む          [US6] (e) 静的（sysopen が 1 箇所・cat 等で tpath を読まない）/ (b) perl 起動 3 回以上
+#   読み直し中の差し替えを辿る                 [US6] (f) FIFO / /dev/zero への symlink（ハング・残留）
+#
 # ── 検査の設計メモ ─────────────────────────────────────────────────────
 #   - emitted fixture はキー・値とも stdin の純関数（ts 等の可変値をスキーマが持たない）。
 #     よって [AC1] は「キー集合・型」と「値まで完全一致」を別 it で両方要求する。
@@ -345,7 +355,7 @@ for e in "$EMITTED_DIR"/*.json; do
   n="$(basename "$e" .json)"
   [ -f "$STDIN_DIR/${n}.json" ] || orphans="$orphans $n"
 done
-assert_eq "$(echo "$orphans" | tr -s ' ')" " UsageSnapshot.main-ok UsageSnapshot.sub-ok UsageSnapshot.unknown"
+assert_eq "$(echo "$orphans" | tr -s ' ')" " UsageSnapshot.main-ok UsageSnapshot.sub-incomplete UsageSnapshot.sub-notool-ok UsageSnapshot.sub-ok UsageSnapshot.unknown"
 
 it "[AC1] Notification（実測で未発火・fixture 無し）も スキーマ通りの最小ボディで送る"
 printf '%s' '{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","message":"SNTLEAFMSGX","cwd":"/work/project"}' >"$IN"
@@ -1930,6 +1940,139 @@ for ev in SessionStart PreToolUse.bash PostToolUse.read UserPromptSubmit Subagen
   it "[US3] ${ev}: transcript_path があっても UsageSnapshot を送らない（Stop / SubagentStop だけ）"
   assert_eq "$SNAP_N" "0"
 done
+# ══════════════════════════════════════════════
+suite "[US6] ツールを使わないサブエージェント: transcript が未完のうちは待って読み直す（Issue #41）"
+# ══════════════════════════════════════════════
+# 原因（実測）: ツールを使わないサブの最後の assistant 行は SubagentStop の発火とほぼ同時〜100ms 以内に
+# agent_transcript_path へ書かれる。フックの背景処理は約 20ms 後に読むので assistant 0 行を読み、
+# ok + models:[] （0 円表示）を送っていた。
+#
+# 契約（Coder へ）:
+#   - SubagentStop のときだけ、transcript の「最後の非空行」を見る。ただし isMeta:true の user 行は飛ばす
+#     （実測: 完成した transcript は assistant 行の後ろに isMeta の user 行が付く。fixture sub-notool-complete）。
+#     その行が JSON として読めない（書きかけ）か、type が assistant でなければ「未完」。
+#     未完なら unknown_reason は incomplete（parse_failed 等の他の理由より優先）。Stop（メイン）は待たず、incomplete にしない。
+#   - 背景処理は未完なら少し待って読み直す（累計約 2 秒まで）。読み直しも毎回 PERL_READ（sysopen 1 回）を使う。
+#     読み直しの結果が incomplete 以外（ok でも symlink 等の unknown でも）ならそれを最終結果として 1 通だけ送る。
+#     最後まで未完なら unknown/incomplete を 1 通だけ送る。ok + models:[] は送らない。
+
+NT_STOP="$MON/test/fixtures/transcript/sub-notool-at-stop.jsonl"
+NT_DONE="$MON/test/fixtures/transcript/sub-notool-complete.jsonl"
+NT_OK="$EMITTED_DIR/UsageSnapshot.sub-notool-ok.json"
+NT_INC="$EMITTED_DIR/UsageSnapshot.sub-incomplete.json"
+US6_DIR="$WORK/us6"; mkdir -p "$US6_DIR"
+SNAP_ITERS_SAVED_US6="$SNAP_ITERS"
+SNAP_ITERS=250   # 0.02 秒刻み = 5 秒（読み直しの累計は約 2 秒）
+
+now_ms() { "$PERL_BIN" -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+
+# (a) 遅れて書かれる最後の assistant 行
+f="$US6_DIR/a.jsonl"; cp "$NT_STOP" "$f"
+( sleep 0.3; tail -n +3 "$NT_DONE" >>"$f" ) >/dev/null 2>&1 &
+US6_W=$!
+run_sub "$f"
+wait "$US6_W" 2>/dev/null
+it "[US6] SubagentStop: 最初は assistant 0 行、約 300ms 後に書かれる → 完成後の値を agent_id 付きで 1 通だけ送る（ok+[] を送らない）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_OK")|1"; fi
+it "[US6] 期待値の自己診断: 完成後の値は message_count 1・output_tokens 423（同じ message.id の 2 行を重複排除）"
+assert_eq "$(jq -c '[.models[0].message_count,.models[0].output_tokens]' "$NT_OK")" "[1,423]"
+check_quiet "(a) 読み直しを伴う SubagentStop" US4
+
+# (a2) 遅れて書かれなくても、最初から完成している transcript は待たずに送る（読み直しで遅くしない）
+t0="$(now_ms)"
+run_sub "$NT_DONE"
+t1="$(now_ms)"
+it "[US6] 完成している transcript（assistant の後ろに isMeta の user 行）は未完扱いにせず、ok を 1 通だけ送る"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_OK")|1"; fi
+it "[US6] 完成している transcript は読み直しの待ちなしで届く（1 秒未満。送信の猶予 0.25 秒を含む）"
+if [ $((t1 - t0)) -lt 1000 ]; then pass; else fail "$((t1 - t0)) ms かかった"; fi
+
+# (b) 最後まで assistant 行が書かれない
+f="$US6_DIR/b.jsonl"; cp "$NT_STOP" "$f"
+PSHIM="$US6_DIR/perlshim"; mkdir -p "$PSHIM"
+printf '#!/bin/sh\nprintf "CMD perl\\n" >>"${SHIM_LOG:-/dev/null}"\nexec %s "$@"\n' "$PERL_BIN" >"$PSHIM/perl"
+chmod +x "$PSHIM/perl"
+BLOG="$US6_DIR/b.log"; : >"$BLOG"
+mk_sub "$IN" "$f"
+t0="$(now_ms)"
+snap_run "$IN" PATH="$PSHIM:$PATH" SHIM_LOG="$BLOG"
+t1="$(now_ms)"
+it "[US6] 最後まで assistant 行が書かれない → unknown/incomplete を 1 通だけ送る（ok+[] を送らない・models を持たない）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_INC")|1"; fi
+it "[US6] 待ちは有界: 1.5 秒以上待って読み直し（即送信しない）、5.5 秒以内に届く（実測 ${t0}→${t1}）"
+if [ $((t1 - t0)) -ge 1500 ] && [ $((t1 - t0)) -le 5500 ]; then pass; else fail "$((t1 - t0)) ms"; fi
+it "[US6] 読み直しの各回も perl の sysopen を通る（perl の起動が 3 回以上＝初回 + 読み直し 2 回以上）"
+if [ "$(grep -c '^CMD perl$' "$BLOG")" -ge 3 ]; then pass; else fail "perl の起動 $(grep -c '^CMD perl$' "$BLOG") 回"; fi
+check_quiet "(b) 最後まで未完の SubagentStop" US4
+
+# (c) 最後の行が書きかけ（JSON として不完全）→ 後から完成
+f="$US6_DIR/c.jsonl"
+line4="$(sed -n 4p "$NT_DONE")"
+{ head -n 3 "$NT_DONE"; printf '%s' "$line4" | head -c 40; } >"$f"
+( sleep 0.3; { printf '%s' "$line4" | tail -c +41; printf '\n'; tail -n +5 "$NT_DONE"; } >>"$f" ) >/dev/null 2>&1 &
+US6_W=$!
+run_sub "$f"
+wait "$US6_W" 2>/dev/null
+it "[US6] 最後の行が書きかけ（parse_failed にせず未完扱い）→ 完成後の値を 1 通だけ送る"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_OK")|1"; fi
+
+# (c2) 最後まで書きかけのまま → parse_failed ではなく incomplete が優先
+f="$US6_DIR/c2.jsonl"
+{ head -n 3 "$NT_DONE"; printf '%s' "$line4" | head -c 40; } >"$f"
+run_sub "$f"
+it "[US6] 最後まで書きかけの行が残る → unknown/incomplete（parse_failed より incomplete を優先）を 1 通だけ"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -S -c . "$SNAP")|$SNAP_N" "$(jq -S -c . "$NT_INC")|1"; fi
+
+# (d) 回帰防止: Stop（メイン）は待たず従来どおり（現状でも PASS しうる）
+t0="$(now_ms)"
+run_main "$NT_STOP"
+t1="$(now_ms)"
+it "[US6] 回帰防止: Stop（メイン）は assistant 行が無い transcript でも待たず、従来どおり ok + models:[] を 1 通だけ（incomplete にしない）"
+if [ -z "$SNAP" ]; then fail "UsageSnapshot が届かない"
+else assert_eq "$(jq -c '[.usage_status,.models,has("unknown_reason"),has("agent_id")]' "$SNAP")|$SNAP_N" '["ok",[],false,false]|1'; fi
+it "[US6] 回帰防止: Stop は 1 秒未満で届く（読み直しの待ちを入れない）"
+if [ $((t1 - t0)) -lt 1000 ]; then pass; else fail "$((t1 - t0)) ms かかった"; fi
+
+# (e) 静的: 名前で開く経路が新コードに無い（US5 の static_absent は HOOK_CODE 全体に掛かる。HOOK_CODE は US5 で作成済み）
+it "[US6] 静的: sysopen は perl の 1 箇所だけ（読み直しも同じ PERL_READ を使い、別の読み取り経路を増やさない）"
+if [ "$(grep -c 'sysopen' "$HOOK_CODE" 2>/dev/null)" = "1" ]; then pass; else fail "sysopen の出現 $(grep -c 'sysopen' "$HOOK_CODE") 箇所"; fi
+static_absent 'cat でパスを読む（cat "$tpath"）' '(^|[^[:alnum:]_])cat[[:space:]]+"?\$\{?tpath'
+static_absent 'tail / sed / awk / grep でパスを読む（"$tpath" を引数に取る）' '(^|[^[:alnum:]_])(tail|sed|awk|grep|od|dd)[[:space:]][^|;]*"?\$\{?tpath'
+it "[US6] 静的: PERL_READ を起動する箇所が読み直しのループ内にもある（perl -e \"\$PERL_READ\" が 1 回以上、sleep が 1 回以上）"
+if grep -Eq 'perl -e "\$PERL_READ"' "$HOOK_CODE" && grep -Eq '(^|[^[:alnum:]_])sleep[[:space:]]' "$HOOK_CODE"; then pass; else fail "perl -e \$PERL_READ または sleep が無い"; fi
+
+# (f) 読み直しの途中で差し替えられても、ハングせず有界で終わる
+SNAP_ITERS_US5=250
+f="$US6_DIR/f-fifo.jsonl"; cp "$NT_STOP" "$f"
+mkfifo "$US6_DIR/f-fifo.new"
+( sleep 0.3; mv -f "$US6_DIR/f-fifo.new" "$f" ) >/dev/null 2>&1 &
+US6_W=$!
+mk_sub "$IN" "$f"
+leak_run "$IN"
+wait "$US6_W" 2>/dev/null
+unk_case "SubagentStop: 読み直しの途中で FIFO に差し替えられても、ハングせず有界で終わる" not_regular_file
+it "[US6] 読み直しの途中で FIFO に差し替え: 背景の読み取りプロセスが残らない"
+if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
+exec 9<>"$f"; exec 9>&-   # 念のため待ちを解く
+
+f="$US6_DIR/f-zero.jsonl"; cp "$NT_STOP" "$f"
+ln -s /dev/zero "$US6_DIR/f-zero.new"
+( sleep 0.3; mv -f "$US6_DIR/f-zero.new" "$f" ) >/dev/null 2>&1 &
+US6_W=$!
+mk_sub "$IN" "$f"
+leak_run "$IN"
+wait "$US6_W" 2>/dev/null
+unk_case "SubagentStop: 読み直しの途中で /dev/zero への symlink に差し替えられても、辿らず有界で終わる" symlink
+it "[US6] 読み直しの途中で /dev/zero への symlink に差し替え: 背景の読み取りプロセスが残らない"
+if [ "$LEAK_N" = "0" ]; then pass; else fail "残留 ${LEAK_N} 本"; fi
+
+SNAP_ITERS="$SNAP_ITERS_SAVED_US6"
+
 
 # ══════════════════════════════════════════════
 suite "[US4] 契約: 無音・LOOP_MONITOR=0・サーバ停止・前景 1 秒"

@@ -219,6 +219,7 @@ gh pr create --body-file /tmp/body.md
 - **transcript を読む経路（`UsageSnapshot`）**: 読むのは Stop の `transcript_path` / SubagentStop の `agent_transcript_path` だけ（もう片方は読まない）。
   パスは外部由来なので、絶対パス・制御文字なし・4096 バイト以下の文字列だけを受け付け、それ以外は読まずに `no_path`。
   パスは perl の `sysopen` で **1 回だけ**開く（`O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_NOCTTY`）。名前で `-L` / `-e` / `-f` を判定してから開き直すことはしない（判定と読み取りの間の差し替え競合を作らない）。
+  SubagentStop では未完（最後の非空行が assistant でない）の間、最大 5 回程度開き直す。各回が独立の 1 回 open で、fd 上の判定と上限は各回に掛かる（回ごとに別の実体を読みうるが、送るのは最後の 1 回の集計だけ）。背景の待ちは累計 2 秒以内。
   最終要素が symlink（ダングリング含む）なら open が ELOOP で失敗して `symlink`、不在・権限なしなどその他の失敗は `read_failed`。
   種別は**開いた fd 上**（`stat`）で判定し、通常ファイル以外（FIFO・ディレクトリ・デバイス）は 1 バイトも読まずに `not_regular_file`。`O_NONBLOCK` で FIFO の open も待たない。
   ただし**開くことはする**（名前で先に判定しないため）。デバイスは open だけが起き、読まずに閉じる。open 自体に副作用があるデバイスでは、その副作用は止まらない（`O_NOCTTY` で端末を制御端末にすることは無い）

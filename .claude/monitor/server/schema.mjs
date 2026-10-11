@@ -71,7 +71,7 @@ const MODEL_ENTRY = Object.freeze({
 
 export const UNKNOWN_REASONS = Object.freeze([
   'no_path', 'symlink', 'not_regular_file', 'too_large', 'read_failed',
-  'parse_failed', 'invalid_usage', 'too_many_models', 'out_of_range',
+  'parse_failed', 'invalid_usage', 'too_many_models', 'out_of_range', 'incomplete',
 ]);
 
 /** @param {number} maxBytes @param {string} pattern @returns {StringSpec} */

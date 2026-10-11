@@ -155,7 +155,7 @@ test('[node] usage が無い（null / undefined）なら何も出さない', asy
 });
 
 test('[node] status unknown は「不明」で、reason の原文を載せない（0 円にもしない）', async () => {
-  for (const reason of ['too_large', '<img src=x onerror=alert(1)>', '__proto__', 'x'.repeat(500)]) {
+  for (const reason of ['too_large', 'incomplete', '<img src=x onerror=alert(1)>', '__proto__', 'x'.repeat(500)]) {
     const r = await node({ status: 'unknown', reason });
     assert.equal(r.state, 'unknown');
     assert.equal(r.costText, '不明');
