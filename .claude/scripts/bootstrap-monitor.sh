@@ -159,6 +159,19 @@ GUIDE_TEXT="compose ファイルが既にあるので compose.yaml は作らな�
       project_directory: .
 compose.monitor.yml はネットワーク monitor-net とボリューム monitor-data を定義する。既存の定義と名前が衝突しないか確認すること。"
 
+# 祖先にだけ compose ファイルがある時の案内。直下用の例（path: compose.monitor.yml /
+# project_directory: .）を祖先の compose に追記すると、参照先がずれて docker compose config が
+# 失敗する（#42）。例は仮の名前 sub だけで、実際のパスや名前は載せない（固定文字列のみ）。
+GUIDE_TEXT_ANCESTOR="compose ファイルは祖先ディレクトリにあるので compose.yaml は作らない。監視も一緒に起動するには、
+その compose ファイルに include を追記してください（Compose v2.20.0 以降）。
+ただし path と project_directory は、その compose ファイルから見た導入先の相対パスに合わせること。
+（導入先が <親>/sub の場合の例）
+  include:
+    - path: sub/compose.monitor.yml
+      project_directory: sub
+詳しくは README の「既存の compose ファイルがある場合」を参照。
+compose.monitor.yml はネットワーク monitor-net とボリューム monitor-data を定義する。既存の定義と名前が衝突しないか確認すること。"
+
 # ---------- 早期離脱 ----------
 
 if [ "${LOOP_BOOTSTRAP:-1}" = "0" ]; then
@@ -184,6 +197,12 @@ while :; do
   [ "$next" = "$d" ] && break
   d="$next"
 done
+
+# 案内文は 1 箇所で決める。直下に候補があれば直下用、祖先にだけあれば祖先用（#42）
+GUIDE="$GUIDE_TEXT"
+if [ "$DIRECT_CAND" -eq 0 ] && [ "$ANCESTOR_CAND" -eq 1 ]; then
+  GUIDE="$GUIDE_TEXT_ANCESTOR"
+fi
 
 HAS_CAND=0
 if [ "$DIRECT_CAND" -eq 1 ] || [ "$ANCESTOR_CAND" -eq 1 ]; then HAS_CAND=1; fi
@@ -248,7 +267,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "--- 生成される compose.yaml ---"
     printf '%s' "$COMPOSE_YAML_CONTENT"
   elif [ "$HAS_CAND" -eq 1 ]; then
-    echo "$GUIDE_TEXT"
+    echo "$GUIDE"
   fi
   exit 0
 fi
@@ -297,7 +316,7 @@ if [ "$NEED_YAML" -eq 1 ]; then
     note "WARN: compose.yaml を書き込めない。"
   fi
 elif [ "$HAS_CAND" -eq 1 ]; then
-  if [ "$CREATED" -eq 1 ]; then note "$GUIDE_TEXT"; else say "$GUIDE_TEXT"; fi
+  if [ "$CREATED" -eq 1 ]; then note "$GUIDE"; else say "$GUIDE"; fi
 fi
 
 # 両方とも既にあって何もしなかった時だけ言う（書き込みに失敗した時は WARN 済み）
