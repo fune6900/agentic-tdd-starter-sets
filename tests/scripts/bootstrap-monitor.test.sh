@@ -1089,15 +1089,60 @@ assert_eq "$(jq -c '[.hooks.SessionStart[] | select(.hooks[0].command == "'"$CMD
 it "settings.json が妥当な JSON"
 assert_ok jq -e . "$SETTINGS"
 
-it "bootstrap-project.sh は変更されていない（HEAD との差分 0）"
-assert_ok git -C "$REPO_ROOT" diff --quiet HEAD -- .claude/scripts/bootstrap-project.sh
+# ══════════════════════════════════════════════
+suite "bootstrap-project との共存（#24 の意図を振る舞いで固定する。ファイルは凍結しない）"
+# ══════════════════════════════════════════════
 
-it "bootstrap-project.sh は main との差分 0（main が無い環境では HEAD で代替）"
-if git -C "$REPO_ROOT" rev-parse --verify -q main >/dev/null 2>&1; then
-  assert_ok git -C "$REPO_ROOT" diff --quiet main -- .claude/scripts/bootstrap-project.sh
-else
-  assert_ok git -C "$REPO_ROOT" diff --quiet HEAD -- .claude/scripts/bootstrap-project.sh
-fi
+PKG_WITH_SCRIPTS='{"name":"target-app","version":"1.0.0","scripts":{"lint":"eslint .","test":"vitest"}}'
+
+# 導入先サンドボックスを作る。fresh の package.json を scripts 付きに置き換えて ci.yml 生成に足るようにし、P と CI_FILE を設定する
+co_proj() {
+  fresh
+  printf '%s\n' "$PKG_WITH_SCRIPTS" > "$P/package.json"
+  CI_FILE="$P/.github/workflows/ci.yml"
+}
+co_project() { bash "$P/.claude/scripts/bootstrap-project.sh" --quiet >/dev/null 2>&1; }
+co_monitor() { bash "$P/.claude/scripts/bootstrap-monitor.sh" --quiet >/dev/null 2>&1; }
+
+co_proj; co_project; RC_ALONE=$?
+CI_ALONE="$CI_FILE"
+
+co_proj; co_project; RC_FWD1=$?; co_monitor; RC_FWD2=$?
+CI_FWD="$CI_FILE"; P_FWD="$P"
+
+co_proj; co_monitor; RC_REV1=$?; co_project; RC_REV2=$?
+CI_REV="$CI_FILE"; P_REV="$P"
+
+it "[共存] bootstrap-project.sh 単独で ci.yml が生成される（比較の前提）"
+assert_file "$CI_ALONE"
+
+it "[共存] project → monitor（settings.json の登録順）でも ci.yml が単独時とバイト一致する"
+if [ -f "$CI_FWD" ] && cmp -s "$CI_ALONE" "$CI_FWD"; then pass; else fail "ci.yml が単独時と異なる、または無い"; fi
+
+it "[共存] monitor → project（逆順）でも ci.yml が単独時とバイト一致する"
+if [ -f "$CI_REV" ] && cmp -s "$CI_ALONE" "$CI_REV"; then pass; else fail "compose の存在が CI_FILE 生成に影響している"; fi
+
+it "[共存] 順序を変えても両スクリプトとも exit 0"
+assert_eq "$RC_ALONE$RC_FWD1$RC_FWD2$RC_REV1$RC_REV2" "00000"
+
+it "[共存] monitor 側の compose.monitor.yml は両順序で生成されている（monitor が実際に動いた前提）"
+if [ -f "$P_FWD/compose.monitor.yml" ] && [ -f "$P_REV/compose.monitor.yml" ]; then pass; else fail "compose.monitor.yml が無い"; fi
+
+it "[共存] bootstrap-monitor.sh は .github 配下に何も作らない（ci.yml の無い導入先）"
+co_proj
+co_monitor; RC=$?
+if [ -f "$P/compose.monitor.yml" ] && [ ! -e "$P/.github" ] && [ "$RC" -eq 0 ]; then pass; else fail "monitor が動いていない（compose.monitor.yml が無い）、.github が作られた、または exit $RC"; fi
+
+it "[共存] bootstrap-monitor.sh は既存の ci.yml をバイトも mtime も変えない"
+co_proj
+mkdir -p "$P/.github/workflows"
+printf 'name: hand-written\non: push\n' > "$CI_FILE"
+old "$CI_FILE"
+BEFORE_CI="$(fsnap "$CI_FILE")"
+BEFORE_GH="$(find "$P/.github" | LC_ALL=C sort | tr '\n' '|')"
+co_monitor; RC=$?
+AFTER_GH="$(find "$P/.github" | LC_ALL=C sort | tr '\n' '|')"
+if [ -f "$P/compose.monitor.yml" ] && [ "$RC" -eq 0 ] && [ "$(fsnap "$CI_FILE")" = "$BEFORE_CI" ] && [ "$AFTER_GH" = "$BEFORE_GH" ]; then pass; else fail "monitor が動いていない（compose.monitor.yml が無い）、または ci.yml / .github の構成が変わった (exit $RC)"; fi
 
 # ══════════════════════════════════════════════
 suite "docker compose config: 生成物が導入先で実際に動く"
